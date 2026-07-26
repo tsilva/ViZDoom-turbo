@@ -1,7 +1,7 @@
 <div align="center">
   <img src="./logo.png" alt="ViZDoom-turbo" width="420" />
   <br /><br />
-  <strong>⚡ High-throughput ViZDoom rollouts, native-vector by design. ⚡</strong>
+  <strong>🚀 Blazing-fast ViZDoom fork with native vectorization and preprocessing 🚀</strong>
   <br /><br />
 </div>
 
