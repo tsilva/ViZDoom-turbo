@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "vizdoom-turbo"
-version = "0.1.1"
+version = "0.1.2"
 description = "Native-vector Gymnasium environments for high-throughput ViZDoom rollouts"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"

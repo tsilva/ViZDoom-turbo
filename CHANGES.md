@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Nothing yet.
+
+## 0.1.2 - 2026-07-26
+
 - Move `vizdoom-turbo` into the `turbo` branch of the ViZDoom fork.
 - Namespace package release tags separately from upstream ViZDoom tags.
 - Exclude generated Python cache files and build artifacts from release distributions.
