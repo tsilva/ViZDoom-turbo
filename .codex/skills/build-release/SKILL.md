@@ -12,7 +12,7 @@ recovery.
 
 The `turbo/` package owns normal semantic versions independently from upstream
 ViZDoom. An untagged, unused version in `turbo/pyproject.toml` is pending;
-otherwise `make -C turbo release` selects the next patch.
+otherwise the release script selects the next patch.
 The release script requires a clean tree synchronized with its upstream, an
 unused PyPI version, consistent Python and Rust metadata, locked dependencies,
 passing local checks, and a valid changelog. It commits the release metadata,
@@ -35,22 +35,22 @@ git log --oneline --decorate @{u}..HEAD
 Stop on dirty or unpublished work. Do not clean, commit, pull, or switch
 branches unless the user asked.
 
-2. Launch the default release from the repository root:
-
-```bash
-make -C turbo release
-```
-
-For an exact version or non-patch bump, prepare the environment and invoke the
-script directly:
+2. Prepare the frozen release environment and launch the default release from
+the repository root:
 
 ```bash
 UV_CACHE_DIR=turbo/.uv-cache uv sync --project turbo --frozen --all-extras --group release
+turbo/scripts/release.py
+```
+
+For an exact version or non-patch bump, invoke the same script with the
+appropriate version option:
+
+```bash
 turbo/scripts/release.py --to <version>
 ```
 
 ```bash
-UV_CACHE_DIR=turbo/.uv-cache uv sync --project turbo --frozen --all-extras --group release
 turbo/scripts/release.py --part minor
 ```
 
