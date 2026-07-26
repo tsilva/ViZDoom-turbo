@@ -1,7 +1,8 @@
 <div align="center">
+  <img src="./logo.png" alt="ViZDoom-turbo" width="420" />
+  <br /><br />
   <strong>⚡ High-throughput ViZDoom rollouts, native-vector by design. ⚡</strong>
   <br /><br />
-  <img src="./logo.png" alt="ViZDoom-turbo" width="420" />
 </div>
 
 `vizdoom-turbo` is a Python library for reinforcement-learning researchers who need fast, parallel ViZDoom environments. It provides a Gymnasium vector environment that can be used directly or selected as an isolated environment provider in `rlab`.
