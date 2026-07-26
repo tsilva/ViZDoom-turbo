@@ -1,0 +1,90 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "vizdoom-turbo"
+version = "0.1.1"
+description = "Native-vector Gymnasium environments for high-throughput ViZDoom rollouts"
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Tiago Silva" },
+]
+keywords = [
+  "doom",
+  "gymnasium",
+  "reinforcement-learning",
+  "vector-environment",
+  "vizdoom",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Rust",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "gymnasium>=1.2,<2",
+  "numpy>=1.26,<3",
+  "vizdoom==1.3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/tsilva/ViZDoom-turbo-fork"
+Documentation = "https://github.com/tsilva/ViZDoom-turbo-fork/tree/turbo#readme"
+Repository = "https://github.com/tsilva/ViZDoom-turbo-fork.git"
+Issues = "https://github.com/tsilva/ViZDoom-turbo-fork/issues"
+Changelog = "https://github.com/tsilva/ViZDoom-turbo-fork/blob/turbo/CHANGES.md"
+
+[project.optional-dependencies]
+dev = [
+  "maturin>=1.8,<2",
+  "pytest>=8,<10",
+  "ruff>=0.15,<0.16",
+]
+
+[dependency-groups]
+release = [
+  "cibuildwheel>=3.3,<4",
+  "maturin>=1.8,<2",
+  "twine>=6.2,<7",
+]
+
+[tool.maturin]
+module-name = "vizdoom_turbo._vizdoom_turbo"
+python-source = "python"
+features = ["pyo3/extension-module"]
+exclude = [
+  "**/__pycache__/**",
+  "**/*.pyc",
+  "**/*.pyo",
+  "dist/**",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.uv]
+exclude-newer = "7 days"
+constraint-dependencies = [
+  "mistralai!=2.4.6",
+  "guardrails-ai!=0.10.1",
+]

@@ -1,0 +1,1188 @@
+"""High-throughput Gymnasium vector environments backed by ViZDoom."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import math
+import operator
+import secrets
+import tempfile
+from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
+
+import gymnasium as gym
+import numpy as np
+import vizdoom as vzd
+from gymnasium.vector import AutoresetMode, VectorEnv
+from gymnasium.vector.utils import batch_space
+
+from ._vizdoom_turbo import preprocess_into
+from .action_tables import ActionTable, resolve_custom_action
+
+_DEFAULT_STATE = "default"
+_BUILTIN_SCENARIOS = {
+    "basic": "basic.cfg",
+    "basic_audio": "basic_audio.cfg",
+    "basic_notifications": "basic_notifications.cfg",
+    "deadly_corridor": "deadly_corridor.cfg",
+    "deathmatch": "deathmatch.cfg",
+    "defend_the_center": "defend_the_center.cfg",
+    "defend_the_line": "defend_the_line.cfg",
+    "health_gathering": "health_gathering.cfg",
+    "health_gathering_supreme": "health_gathering_supreme.cfg",
+    "my_way_home": "my_way_home.cfg",
+    "predict_position": "predict_position.cfg",
+    "take_cover": "take_cover.cfg",
+}
+
+
+def _positive_int(value: Any, name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a positive integer")
+    try:
+        result = operator.index(value)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if result <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return int(result)
+
+
+def _nonnegative_int(value: Any, name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a non-negative integer")
+    try:
+        result = operator.index(value)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a non-negative integer") from exc
+    if result < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return int(result)
+
+
+def _probability(value: Any, name: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be between 0.0 and 1.0") from exc
+    if not math.isfinite(result) or not 0.0 <= result <= 1.0:
+        raise ValueError(f"{name} must be between 0.0 and 1.0")
+    return result
+
+
+def _normalize_pair(value: Any, name: str) -> tuple[int, int] | None:
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes, bytearray)):
+        raise ValueError(f"{name} must be a (height, width) pair")
+    try:
+        height, width = value
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a (height, width) pair") from exc
+    return _positive_int(height, f"{name} height"), _positive_int(width, f"{name} width")
+
+
+def _normalize_crop(value: Any) -> tuple[int, int, int, int]:
+    if value is None:
+        return 0, 0, 0, 0
+    if isinstance(value, (str, bytes, bytearray)):
+        raise ValueError("obs_crop must contain top, bottom, left, right")
+    try:
+        top, bottom, left, right = value
+    except (TypeError, ValueError) as exc:
+        raise ValueError("obs_crop must contain top, bottom, left, right") from exc
+    return tuple(
+        _nonnegative_int(item, name)
+        for item, name in zip(
+            (top, bottom, left, right),
+            ("obs_crop top", "obs_crop bottom", "obs_crop left", "obs_crop right"),
+            strict=True,
+        )
+    )
+
+
+def _normalize_reward_clip(value: Any) -> tuple[float, float] | None:
+    if value is False:
+        return None
+    if value is True:
+        return -1.0, 1.0
+    try:
+        low, high = value
+        low, high = float(low), float(high)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("reward_clip must be a bool or a (low, high) pair") from exc
+    if not math.isfinite(low) or not math.isfinite(high) or low > high:
+        raise ValueError("reward_clip bounds must be finite with low <= high")
+    return low, high
+
+
+def _normalize_seed(
+    seed: int | Sequence[int | None] | None,
+    num_envs: int,
+) -> list[int | None]:
+    if seed is None:
+        return [None] * num_envs
+    if isinstance(seed, Sequence) and not isinstance(seed, (str, bytes, bytearray)):
+        result = [None if value is None else int(value) for value in seed]
+        if len(result) != num_envs:
+            raise ValueError("seed sequence length must match num_envs")
+        return result
+    base = int(seed)
+    return [base + lane for lane in range(num_envs)]
+
+
+def _enum_name(value: Any) -> str:
+    return str(getattr(value, "name", value)).split(".")[-1]
+
+
+@dataclass(frozen=True)
+class _Scenario:
+    config_path: Path
+    doom_map: str | None
+    doom_skill: int | None
+
+
+def _resolve_scenario(game: str | Path | None, scenario: str | Path | None) -> _Scenario:
+    requested = scenario if scenario not in (None, "scenario") else game
+    if requested is None:
+        requested = "VizdoomBasic-v1"
+    candidate = Path(str(requested)).expanduser()
+    if candidate.is_file():
+        return _Scenario(candidate.resolve(), None, None)
+    alias = str(requested).strip().casefold().removesuffix(".cfg")
+    if alias in _BUILTIN_SCENARIOS:
+        return _Scenario(Path(vzd.scenarios_path) / _BUILTIN_SCENARIOS[alias], None, None)
+    try:
+        import vizdoom.gymnasium_wrapper  # noqa: F401
+
+        spec = gym.spec(str(requested))
+    except (gym.error.Error, ImportError) as exc:
+        choices = ", ".join(sorted(_BUILTIN_SCENARIOS))
+        raise ValueError(
+            f"unknown ViZDoom game/scenario {requested!r}; use a registered Vizdoom id, "
+            f"a .cfg path, or one of: {choices}"
+        ) from exc
+    config_name = spec.kwargs.get("scenario_config_file")
+    if not config_name:
+        raise ValueError(f"Gymnasium environment {requested!r} is not a ViZDoom scenario")
+    return _Scenario(
+        Path(vzd.scenarios_path) / str(config_name),
+        str(spec.kwargs["doom_map"]) if spec.kwargs.get("doom_map") else None,
+        int(spec.kwargs["doom_skill"]) if spec.kwargs.get("doom_skill") else None,
+    )
+
+
+def scenario_buttons(
+    game: str | Path | None = "VizdoomBasic-v1",
+    *,
+    scenario: str | Path | None = None,
+) -> tuple[str, ...]:
+    """Return ordered native button labels without starting a game instance."""
+    resolved = _resolve_scenario(game, scenario)
+    template = vzd.DoomGame()
+    try:
+        template.load_config(str(resolved.config_path))
+        return tuple(_enum_name(button) for button in template.get_available_buttons())
+    finally:
+        template.close()
+
+
+@dataclass(frozen=True)
+class _StateAsset:
+    label: str
+    payload: bytes | None
+
+
+def _state_asset(value: Any, state_dir: Path | None) -> _StateAsset:
+    if value is None or str(value).strip().casefold() in {"", "default", "none"}:
+        return _StateAsset(_DEFAULT_STATE, None)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        payload = bytes(value)
+        return _StateAsset(f"sha256:{hashlib.sha256(payload).hexdigest()}", payload)
+    path = Path(value).expanduser()
+    candidates = [path]
+    if state_dir is not None and not path.is_absolute():
+        candidates.extend(
+            state_dir / f"{path}{suffix}" for suffix in ("", ".zds", ".save", ".png")
+        )
+    for candidate in candidates:
+        if candidate.is_file():
+            payload = candidate.read_bytes()
+            return _StateAsset(str(value), payload)
+    raise FileNotFoundError(f"ViZDoom state {value!r} is not a readable save file")
+
+
+def _resolve_state_catalog(
+    state: Any,
+    state_catalog: Sequence[Any] | None,
+    state_dir: str | Path | None,
+) -> tuple[tuple[_StateAsset, ...], int]:
+    root = Path(state_dir).expanduser().resolve() if state_dir is not None else None
+    requested = _state_asset(state, root)
+    values = (state,) if state_catalog is None else tuple(state_catalog)
+    if not values:
+        values = (_DEFAULT_STATE,)
+    assets = tuple(_state_asset(value, root) for value in values)
+    labels = tuple(asset.label for asset in assets)
+    if len(set(labels)) != len(labels):
+        raise ValueError("state_catalog must contain unique state labels")
+    try:
+        default_index = labels.index(requested.label)
+    except ValueError as exc:
+        raise ValueError("state must be present in state_catalog") from exc
+    return assets, default_index
+
+
+@dataclass(frozen=True)
+class _EpisodeOrigin:
+    game_seed: int
+    state_index: int
+    noop_count: int
+
+
+@dataclass(frozen=True)
+class _LiveSnapshot:
+    owner: str
+    config_hash: str
+    origin: _EpisodeOrigin
+    action_history: np.ndarray
+    stack: np.ndarray
+    stack_head: int
+    raw_frame: np.ndarray
+    rng_state: dict[str, Any]
+    last_action: np.ndarray
+    state_index: int
+    episode_return: float
+
+    @property
+    def nbytes(self) -> int:
+        return self.action_history.nbytes + self.stack.nbytes + self.raw_frame.nbytes
+
+    def __reduce__(self):
+        raise TypeError("live ViZDoom snapshots are session-local and cannot be pickled")
+
+
+class VizdoomTurboVecEnv(VectorEnv):
+    """Direct Gymnasium vector environment for independent ViZDoom instances.
+
+    ViZDoom's native frame-advance operation releases the GIL. This environment
+    uses a provider-owned thread pool to advance lanes concurrently, then applies
+    crop, max-pooling, resize, grayscale conversion, and frame stacking in
+    preallocated batched buffers.
+
+    Autoreset is permanently disabled. Terminal lanes retain their final policy
+    observation and must be selected by a masked reset before any further step.
+    """
+
+    metadata = {
+        "autoreset_mode": AutoresetMode.DISABLED,
+        "render_modes": ["rgb_array"],
+        "render_fps": int(vzd.DEFAULT_TICRATE),
+    }
+    supports_live_snapshots = True
+
+    def __init__(
+        self,
+        game: str | Path | None = "VizdoomBasic-v1",
+        state: Any = _DEFAULT_STATE,
+        scenario: str | Path | None = None,
+        info: Any = None,
+        use_restricted_actions: Any | str | ActionTable = "filtered",
+        record: bool = False,
+        players: int = 1,
+        inttype: Any = "stable",
+        obs_type: Any = "image",
+        render_mode: str = "rgb_array",
+        *,
+        num_envs: int = 1,
+        num_threads: int | None = None,
+        rom_path: str | None = None,
+        obs_copy: Literal["copy", "safe_view", "unsafe_view"] = "safe_view",
+        obs_resize: tuple[int, int] | None = (84, 84),
+        obs_crop: tuple[int, int, int, int] | None = None,
+        obs_crop_mode: Literal["remove", "mask"] = "remove",
+        obs_crop_fill: int = 0,
+        obs_grayscale: bool = True,
+        obs_resize_algorithm: Literal["nearest", "bilinear", "area"] = "area",
+        obs_layout: Literal["hwc", "chw"] = "chw",
+        frame_skip: int = 4,
+        frame_stack: int = 4,
+        maxpool_last_two: bool = False,
+        noop_reset_max: int = 0,
+        use_fire_reset: bool = False,
+        sticky_action_prob: float = 0.0,
+        reward_clip: bool | tuple[float, float] = False,
+        info_filter: str | Mapping[str, Any] = "all",
+        state_catalog: Sequence[Any] | None = None,
+        state_dir: str | Path | None = None,
+        doom_map: str | None = None,
+        doom_skill: int | None = None,
+        game_args: str | None = None,
+        game_variables: Sequence[str] | None = None,
+        treat_episode_timeout_as_truncation: bool = True,
+        vizdoom_config: Mapping[str, Any] | None = None,
+        **unsupported: Any,
+    ):
+        if unsupported:
+            raise TypeError(f"unsupported option(s): {', '.join(sorted(unsupported))}")
+        if info not in (None, "data"):
+            raise ValueError("info must be None/'data'; use game_variables for ViZDoom signals")
+        if record:
+            raise ValueError("record=True is unsupported on the native vector path")
+        if players != 1:
+            raise ValueError("VizdoomTurboVecEnv currently supports players=1")
+        if _enum_name(obs_type).casefold() not in {"image", "observations.image"}:
+            raise ValueError("VizdoomTurboVecEnv supports image observations only")
+        if render_mode != "rgb_array":
+            raise ValueError("render_mode must be 'rgb_array'")
+        if use_fire_reset:
+            raise ValueError("use_fire_reset is not applicable to ViZDoom")
+        del inttype
+
+        self.num_envs = _positive_int(num_envs, "num_envs")
+        self.num_threads = (
+            self.num_envs
+            if num_threads is None
+            else min(_positive_int(num_threads, "num_threads"), self.num_envs)
+        )
+        self.frame_skip = _positive_int(frame_skip, "frame_skip")
+        self.frame_stack = _positive_int(frame_stack, "frame_stack")
+        self.noop_reset_max = _nonnegative_int(noop_reset_max, "noop_reset_max")
+        self.sticky_action_prob = _probability(sticky_action_prob, "sticky_action_prob")
+        self.maxpool_last_two = bool(maxpool_last_two)
+        self.reward_clip = _normalize_reward_clip(reward_clip)
+        self.obs_grayscale = bool(obs_grayscale)
+        self.obs_layout = str(obs_layout).casefold()
+        if self.obs_layout not in {"hwc", "chw"}:
+            raise ValueError("obs_layout must be 'hwc' or 'chw'")
+        self.obs_copy = str(obs_copy).casefold()
+        if self.obs_copy not in {"copy", "safe_view", "unsafe_view"}:
+            raise ValueError("obs_copy must be 'copy', 'safe_view', or 'unsafe_view'")
+        self.obs_crop = _normalize_crop(obs_crop)
+        self.obs_crop_mode = str(obs_crop_mode).casefold()
+        if self.obs_crop_mode not in {"remove", "mask"}:
+            raise ValueError("obs_crop_mode must be 'remove' or 'mask'")
+        self.obs_crop_fill = _nonnegative_int(obs_crop_fill, "obs_crop_fill")
+        if self.obs_crop_fill > 255:
+            raise ValueError("obs_crop_fill must be in [0, 255]")
+        self.obs_resize_algorithm = str(obs_resize_algorithm).casefold()
+        if self.obs_resize_algorithm not in {"nearest", "bilinear", "area"}:
+            raise ValueError(
+                "obs_resize_algorithm must be 'nearest', 'bilinear', or 'area'"
+            )
+        self.treat_episode_timeout_as_truncation = bool(
+            treat_episode_timeout_as_truncation
+        )
+        self.game = str(game or "VizdoomBasic-v1")
+        self.render_mode = render_mode
+        self.autoreset_mode = AutoresetMode.DISABLED
+        self.closed = False
+        self._owner = secrets.token_hex(16)
+        self._scenario = _resolve_scenario(game, scenario)
+        self._doom_map = doom_map or self._scenario.doom_map
+        self._doom_skill = int(doom_skill) if doom_skill is not None else self._scenario.doom_skill
+        self._game_args = game_args
+        self._rom_path = rom_path
+        self._vizdoom_config = dict(vizdoom_config or {})
+        self._requested_game_variables = tuple(game_variables or ())
+        self._assets, self._default_state_index = _resolve_state_catalog(
+            state, state_catalog, state_dir
+        )
+        self.state_catalog = tuple(asset.label for asset in self._assets)
+        self.initial_state_names = self.state_catalog
+        self.initial_state_assets = tuple(
+            {
+                "name": asset.label,
+                "sha256": (
+                    hashlib.sha256(asset.payload).hexdigest()
+                    if asset.payload is not None
+                    else None
+                ),
+            }
+            for asset in self._assets
+        )
+
+        self._tempdir = tempfile.TemporaryDirectory(prefix="vizdoom-turbo-")
+        template = self._new_game()
+        try:
+            self.raw_width = int(template.get_screen_width())
+            self.raw_height = int(template.get_screen_height())
+            self._button_enums = tuple(template.get_available_buttons())
+            self.buttons = tuple(_enum_name(button) for button in self._button_enums)
+            self._binary = np.asarray(
+                [int(button.value) < int(vzd.BINARY_BUTTON_COUNT) for button in self._button_enums],
+                dtype=np.bool_,
+            )
+            self._game_variables = tuple(template.get_available_game_variables())
+            self.game_variable_names = tuple(
+                _enum_name(variable).casefold() for variable in self._game_variables
+            )
+            self._configure_action_space(use_restricted_actions, template)
+        finally:
+            template.close()
+
+        if (
+            self.obs_crop[0] + self.obs_crop[1] >= self.raw_height
+            or self.obs_crop[2] + self.obs_crop[3] >= self.raw_width
+        ):
+            raise ValueError("obs_crop removes the entire source image")
+        source_h = (
+            self.raw_height
+            if self.obs_crop_mode == "mask"
+            else self.raw_height - self.obs_crop[0] - self.obs_crop[1]
+        )
+        source_w = (
+            self.raw_width
+            if self.obs_crop_mode == "mask"
+            else self.raw_width - self.obs_crop[2] - self.obs_crop[3]
+        )
+        resolved_resize = _normalize_pair(obs_resize, "obs_resize")
+        self.obs_height, self.obs_width = resolved_resize or (source_h, source_w)
+        channels = 1 if self.obs_grayscale else 3
+        stacked_channels = channels * self.frame_stack
+        single_shape = (
+            (stacked_channels, self.obs_height, self.obs_width)
+            if self.obs_layout == "chw"
+            else (self.obs_height, self.obs_width, stacked_channels)
+        )
+        self.single_observation_space = gym.spaces.Box(
+            0, 255, shape=single_shape, dtype=np.uint8
+        )
+        self.observation_space = batch_space(self.single_observation_space, self.num_envs)
+        self._processed = np.empty(
+            (self.num_envs, self.obs_height, self.obs_width, channels), dtype=np.uint8
+        )
+        self._stack = np.zeros(
+            (
+                self.num_envs,
+                self.frame_stack,
+                self.obs_height,
+                self.obs_width,
+                channels,
+            ),
+            dtype=np.uint8,
+        )
+        self._stack_heads = np.zeros(self.num_envs, dtype=np.int64)
+        self._raw_frames = np.zeros(
+            (self.num_envs, self.raw_height, self.raw_width, 3), dtype=np.uint8
+        )
+        self._previous_raw = np.zeros_like(self._raw_frames)
+        buffer_count = 1 if self.obs_copy == "unsafe_view" else 2
+        self._obs_buffers = [
+            np.empty((self.num_envs, *single_shape), dtype=np.uint8)
+            for _ in range(buffer_count)
+        ]
+        self._reward_buffers = [
+            np.empty(self.num_envs, dtype=np.float32) for _ in range(buffer_count)
+        ]
+        self._terminated_buffers = [
+            np.empty(self.num_envs, dtype=np.bool_) for _ in range(buffer_count)
+        ]
+        self._truncated_buffers = [
+            np.empty(self.num_envs, dtype=np.bool_) for _ in range(buffer_count)
+        ]
+        self._buffer_index = 0
+        self._initialized = np.zeros(self.num_envs, dtype=np.bool_)
+        self._pending_reset = np.zeros(self.num_envs, dtype=np.bool_)
+        self._active_state_indices = np.full(
+            self.num_envs, self._default_state_index, dtype=np.int32
+        )
+        self._active_state_indices.setflags(write=False)
+        self._episode_returns = np.zeros(self.num_envs, dtype=np.float64)
+        self._episode_origins = [
+            _EpisodeOrigin(lane, self._default_state_index, 0)
+            for lane in range(self.num_envs)
+        ]
+        self._action_history: list[list[np.ndarray]] = [
+            [] for _ in range(self.num_envs)
+        ]
+        self._last_actions = np.zeros(
+            (self.num_envs, len(self._button_enums)), dtype=np.float64
+        )
+        self._rngs = [np.random.default_rng(lane) for lane in range(self.num_envs)]
+        self._seed_values = [None] * self.num_envs
+        self._options = [None] * self.num_envs
+        self._signal_names = (
+            *self.game_variable_names,
+            "episode_time",
+            "episode_return",
+            "player_dead",
+            "pending_reset",
+        )
+        self.signal_schema = {
+            name: {"dtype": np.float64, "shape": ()} for name in self._signal_names
+        }
+        self._signals = np.zeros(
+            (self.num_envs, len(self._signal_names)), dtype=np.float64
+        )
+        self._configure_info_filter(info_filter)
+        config_payload = {
+            "scenario": str(self._scenario.config_path.resolve()),
+            "doom_map": self._doom_map,
+            "doom_skill": self._doom_skill,
+            "buttons": self.buttons,
+            "variables": self.game_variable_names,
+            "frame_skip": self.frame_skip,
+            "frame_stack": self.frame_stack,
+            "crop": self.obs_crop,
+            "crop_mode": self.obs_crop_mode,
+            "resize": (self.obs_height, self.obs_width),
+            "grayscale": self.obs_grayscale,
+            "layout": self.obs_layout,
+        }
+        self._config_hash = hashlib.sha256(
+            json.dumps(config_payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        self._pool = ThreadPoolExecutor(
+            max_workers=self.num_threads,
+            thread_name_prefix="vizdoom-turbo",
+        )
+        self._games = [self._new_game() for _ in range(self.num_envs)]
+        for lane, lane_game in enumerate(self._games):
+            lane_game.set_seed(lane)
+        futures = [self._pool.submit(lane_game.init) for lane_game in self._games]
+        try:
+            for future in futures:
+                future.result()
+        except BaseException:
+            self.close()
+            raise
+
+    def _new_game(self):
+        game = vzd.DoomGame()
+        game.load_config(str(self._scenario.config_path))
+        game.set_doom_config_path(
+            str(
+                Path(self._tempdir.name)
+                / f"engine-{secrets.token_hex(8)}.ini"
+            )
+        )
+        game.set_window_visible(False)
+        game.set_sound_enabled(False)
+        game.set_audio_buffer_enabled(False)
+        game.set_screen_format(vzd.ScreenFormat.RGB24)
+        game.set_mode(vzd.Mode.PLAYER)
+        if self._rom_path:
+            game.set_doom_game_path(str(Path(self._rom_path).expanduser()))
+        if self._doom_map:
+            game.set_doom_map(self._doom_map)
+        if self._doom_skill is not None:
+            game.set_doom_skill(self._doom_skill)
+        if self._game_args:
+            game.add_game_args(self._game_args)
+        if self._vizdoom_config:
+            game.set_config(self._vizdoom_config)
+        for name in self._requested_game_variables:
+            normalized = str(name).strip().upper()
+            try:
+                variable = getattr(vzd.GameVariable, normalized)
+            except AttributeError as exc:
+                raise ValueError(f"unknown ViZDoom game variable {name!r}") from exc
+            if variable not in game.get_available_game_variables():
+                game.add_available_game_variable(variable)
+        return game
+
+    def _configure_action_space(self, value: Any, template: Any) -> None:
+        mode_name = _enum_name(value).casefold() if value is not None else "filtered"
+        self.use_restricted_actions = value
+        self._custom_actions: np.ndarray | None = None
+        if mode_name in {"all", "filtered", "multi_discrete"}:
+            self.action_mode = mode_name
+            self.action_preset = None
+            self.action_table = None
+            self.action_meanings = self.buttons
+            self.action_table_hash = None
+            if np.all(self._binary):
+                if mode_name == "multi_discrete":
+                    self.single_action_space = gym.spaces.MultiDiscrete(
+                        np.full(len(self.buttons), 2, dtype=np.int64)
+                    )
+                else:
+                    self.single_action_space = gym.spaces.MultiBinary(len(self.buttons))
+            else:
+                low = np.zeros(len(self.buttons), dtype=np.float32)
+                high = np.ones(len(self.buttons), dtype=np.float32)
+                for index, (button, binary) in enumerate(
+                    zip(self._button_enums, self._binary, strict=True)
+                ):
+                    if not binary:
+                        maximum = abs(float(template.get_button_max_value(button)))
+                        maximum = maximum if maximum > 0 else np.finfo(np.float32).max
+                        low[index], high[index] = -maximum, maximum
+                self.single_action_space = gym.spaces.Box(low, high, dtype=np.float32)
+            self.action_space = batch_space(self.single_action_space, self.num_envs)
+            return
+        if np.any(~self._binary):
+            binary_names = tuple(
+                name for name, binary in zip(self.buttons, self._binary, strict=True) if binary
+            )
+        else:
+            binary_names = self.buttons
+        resolved = resolve_custom_action(
+            "minimal" if mode_name == "discrete" else value,
+            buttons=binary_names,
+        )
+        button_index = {name: index for index, name in enumerate(self.buttons)}
+        actions = np.zeros((len(resolved.table), len(self.buttons)), dtype=np.float64)
+        for action_index, labels in enumerate(resolved.table):
+            for label in labels:
+                actions[action_index, button_index[label]] = 1.0
+        self._custom_actions = actions
+        self.action_mode = "custom_discrete"
+        self.action_preset = resolved.preset
+        self.action_table = resolved.table
+        self.action_meanings = resolved.meanings
+        self.action_table_hash = resolved.table_hash
+        self.single_action_space = gym.spaces.Discrete(len(resolved.table))
+        self.action_space = gym.spaces.MultiDiscrete(
+            np.full(self.num_envs, len(resolved.table), dtype=np.int64)
+        )
+
+    def _configure_info_filter(self, value: str | Mapping[str, Any]) -> None:
+        if isinstance(value, Mapping):
+            unknown = set(value) - {"mode", "keys"}
+            if unknown:
+                raise ValueError(f"unknown info_filter keys: {sorted(unknown)}")
+            mode = str(value.get("mode", "all"))
+            keys = value.get("keys")
+            selected = self._signal_names if keys is None else tuple(map(str, keys))
+        else:
+            mode = str(value)
+            selected = self._signal_names
+        if mode not in {"all", "terminal", "none"}:
+            raise ValueError("info_filter mode must be 'all', 'terminal', or 'none'")
+        unknown_signals = set(selected) - set(self._signal_names)
+        if unknown_signals:
+            raise ValueError(f"unknown info keys: {sorted(unknown_signals)}")
+        self._info_mode = mode
+        self._info_keys = tuple(selected)
+
+    def _next_buffers(self):
+        index = self._buffer_index
+        self._buffer_index = (self._buffer_index + 1) % len(self._obs_buffers)
+        return (
+            self._obs_buffers[index],
+            self._reward_buffers[index],
+            self._terminated_buffers[index],
+            self._truncated_buffers[index],
+        )
+
+    def _returned_obs(self, value: np.ndarray) -> np.ndarray:
+        return value.copy() if self.obs_copy == "copy" else value
+
+    def _write_observations(self, output: np.ndarray) -> None:
+        channels = self._stack.shape[-1]
+        for lane in range(self.num_envs):
+            head = int(self._stack_heads[lane])
+            for output_slot in range(self.frame_stack):
+                source_slot = (head + 1 + output_slot) % self.frame_stack
+                frame = self._stack[lane, source_slot]
+                channel_start = output_slot * channels
+                channel_end = channel_start + channels
+                if self.obs_layout == "chw":
+                    output[lane, channel_start:channel_end] = frame.transpose(2, 0, 1)
+                else:
+                    output[lane, :, :, channel_start:channel_end] = frame
+
+    def _preprocess(self, previous: np.ndarray | None = None) -> None:
+        preprocess_into(
+            self._raw_frames,
+            self._processed,
+            list(self.obs_crop),
+            self.obs_crop_mode == "mask",
+            self.obs_crop_fill,
+            self.obs_resize_algorithm,
+            previous,
+        )
+
+    def _read_screen(self, lane_game: Any, fallback: np.ndarray) -> np.ndarray:
+        state = lane_game.get_state()
+        if state is None or state.screen_buffer is None:
+            return fallback.copy()
+        screen = np.asarray(state.screen_buffer, dtype=np.uint8)
+        expected = (self.raw_height, self.raw_width, 3)
+        if screen.shape != expected:
+            raise RuntimeError(
+                f"ViZDoom returned screen shape {screen.shape}; expected {expected}"
+            )
+        return np.ascontiguousarray(screen)
+
+    def _raw_signals(self, lane_game: Any) -> np.ndarray:
+        values = np.empty(len(self._game_variables), dtype=np.float64)
+        for index, variable in enumerate(self._game_variables):
+            try:
+                values[index] = float(lane_game.get_game_variable(variable))
+            except Exception:
+                values[index] = 0.0
+        return values
+
+    def _update_signal_row(self, lane: int) -> None:
+        width = len(self._game_variables)
+        lane_game = self._games[lane]
+        self._signals[lane, width] = float(lane_game.get_episode_time())
+        self._signals[lane, width + 1] = self._episode_returns[lane]
+        self._signals[lane, width + 2] = float(lane_game.is_player_dead())
+        self._signals[lane, width + 3] = float(self._pending_reset[lane])
+
+    def _infos(self, present: np.ndarray | None = None) -> dict[str, np.ndarray]:
+        if self._info_mode == "none":
+            return {}
+        if present is None:
+            present = np.ones(self.num_envs, dtype=np.bool_)
+        if self._info_mode == "terminal":
+            present = present & self._pending_reset
+        result: dict[str, np.ndarray] = {}
+        for key in self._info_keys:
+            index = self._signal_names.index(key)
+            result[key] = self._signals[:, index].copy()
+            result[f"_{key}"] = present.copy()
+        return result
+
+    def _save_path(self, lane: int, purpose: str) -> Path:
+        return Path(self._tempdir.name) / f"{purpose}-{lane}-{secrets.token_hex(8)}.zds"
+
+    def _load_bytes(
+        self,
+        lane_game: Any,
+        lane: int,
+        payload: bytes,
+        *,
+        episode_time: int = 0,
+    ) -> None:
+        lane_game.new_episode()
+        elapsed = max(0, episode_time - int(lane_game.get_episode_time()))
+        if elapsed:
+            lane_game.set_action([0.0] * len(self._button_enums))
+            lane_game.advance_action(elapsed, False)
+        path = self._save_path(lane, "load")
+        try:
+            path.write_bytes(payload)
+            lane_game.load(str(path))
+        finally:
+            path.unlink(missing_ok=True)
+
+    def _reset_lane(
+        self,
+        lane: int,
+        seed: int | None,
+        asset: _StateAsset | None,
+        snapshot: _LiveSnapshot | None,
+        noop_count: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        lane_game = self._games[lane]
+        if snapshot is not None:
+            origin = snapshot.origin
+            lane_game.set_seed(origin.game_seed)
+            origin_asset = self._assets[origin.state_index]
+            if origin_asset.payload is not None:
+                self._load_bytes(lane_game, lane, origin_asset.payload)
+            else:
+                lane_game.new_episode()
+            if origin.noop_count:
+                lane_game.set_action([0.0] * len(self._button_enums))
+                lane_game.advance_action(origin.noop_count, True)
+            for action in snapshot.action_history:
+                lane_game.set_action(action.tolist())
+                if self.maxpool_last_two and self.frame_skip > 1:
+                    lane_game.advance_action(self.frame_skip - 1, True)
+                    if not lane_game.is_episode_finished():
+                        lane_game.advance_action(1, True)
+                else:
+                    lane_game.advance_action(self.frame_skip, True)
+        else:
+            if seed is None:
+                raise RuntimeError("static reset requires a resolved lane seed")
+            lane_game.set_seed(int(seed) & np.iinfo(np.uint32).max)
+            if asset is not None and asset.payload is not None:
+                self._load_bytes(lane_game, lane, asset.payload)
+            else:
+                lane_game.new_episode()
+            if noop_count:
+                lane_game.set_action([0.0] * len(self._button_enums))
+                lane_game.advance_action(noop_count, True)
+        raw = self._read_screen(lane_game, self._raw_frames[lane])
+        return raw, self._raw_signals(lane_game)
+
+    def seed(self, seed: int | None = None) -> list[int | None]:
+        self._seed_values = _normalize_seed(seed, self.num_envs)
+        return list(self._seed_values)
+
+    def reset(
+        self,
+        *,
+        seed: int | Sequence[int | None] | None = None,
+        options: Mapping[str, Any] | None = None,
+    ):
+        if self.closed:
+            raise RuntimeError("cannot reset a closed environment")
+        reset_options = dict(options or {})
+        mask = reset_options.pop("reset_mask", None)
+        if mask is None:
+            mask = np.ones(self.num_envs, dtype=np.bool_)
+        if not isinstance(mask, np.ndarray):
+            raise TypeError("options['reset_mask'] must be a NumPy array")
+        if mask.shape != (self.num_envs,):
+            raise ValueError(f"options['reset_mask'] must have shape ({self.num_envs},)")
+        if mask.dtype != np.bool_:
+            raise TypeError("options['reset_mask'] must have dtype np.bool_")
+        if not np.any(mask):
+            raise ValueError("options['reset_mask'] must select at least one lane")
+
+        snapshots = reset_options.pop("snapshots", None)
+        snapshot_values: list[_LiveSnapshot | None]
+        if snapshots is None:
+            snapshot_values = [None] * self.num_envs
+        else:
+            if isinstance(snapshots, (str, bytes, bytearray)) or not isinstance(
+                snapshots, Sequence
+            ):
+                raise TypeError("options['snapshots'] must be a lane-aligned sequence")
+            if len(snapshots) != self.num_envs:
+                raise ValueError(
+                    f"options['snapshots'] must have length {self.num_envs}"
+                )
+            snapshot_values = list(snapshots)
+        snapshot_mask = np.asarray(
+            [value is not None for value in snapshot_values], dtype=np.bool_
+        )
+        if np.any(snapshot_mask & ~mask):
+            raise ValueError("snapshots may only be supplied for selected reset lanes")
+        for value in (item for item in snapshot_values if item is not None):
+            if not isinstance(value, _LiveSnapshot):
+                raise TypeError("snapshot values must come from capture_snapshots()")
+            if value.owner != self._owner or value.config_hash != self._config_hash:
+                raise ValueError("snapshot belongs to a different environment instance/config")
+
+        state_indices = reset_options.pop(
+            "state_indices", reset_options.pop("start_indices", None)
+        )
+        start_ids = reset_options.pop("start_ids", None)
+        if state_indices is not None and start_ids is not None:
+            raise ValueError("pass state_indices/start_indices or start_ids, not both")
+        if start_ids is not None:
+            ids = np.asarray(start_ids, dtype=object)
+            if ids.shape != (self.num_envs,):
+                raise ValueError(f"start_ids must have shape ({self.num_envs},)")
+            lookup = {name: index for index, name in enumerate(self.state_catalog)}
+            state_indices = np.full(self.num_envs, -1, dtype=np.int32)
+            for lane in np.flatnonzero(mask & ~snapshot_mask):
+                try:
+                    state_indices[lane] = lookup[str(ids[lane])]
+                except KeyError as exc:
+                    raise ValueError(f"unknown start_id {ids[lane]!r}") from exc
+        elif state_indices is None:
+            state_indices = np.full(
+                self.num_envs, self._default_state_index, dtype=np.int32
+            )
+            state_indices[snapshot_mask] = -1
+        if not isinstance(state_indices, np.ndarray):
+            raise TypeError("options['state_indices'] must be a NumPy array")
+        if state_indices.shape != (self.num_envs,):
+            raise ValueError(
+                f"options['state_indices'] must have shape ({self.num_envs},)"
+            )
+        if state_indices.dtype != np.int32:
+            raise TypeError("options['state_indices'] must have dtype np.int32")
+        static_mask = mask & ~snapshot_mask
+        selected = state_indices[static_mask]
+        if np.any(selected < 0) or np.any(selected >= len(self.state_catalog)):
+            raise ValueError("selected state_indices entries must index state_catalog")
+        if np.any(state_indices[snapshot_mask] != -1):
+            raise ValueError("snapshot reset lanes must use -1 for state_indices")
+        if reset_options:
+            raise ValueError(f"unsupported reset options: {sorted(reset_options)}")
+
+        seeds = (
+            _normalize_seed(seed, self.num_envs)
+            if seed is not None
+            else list(self._seed_values)
+        )
+        if any(seeds[lane] is not None for lane in np.flatnonzero(snapshot_mask)):
+            raise ValueError("snapshot reset lanes cannot also specify a seed")
+        noop_counts = np.zeros(self.num_envs, dtype=np.int64)
+        game_seeds: list[int | None] = [None] * self.num_envs
+        for lane in np.flatnonzero(static_mask):
+            lane_seed = seeds[lane]
+            if lane_seed is not None:
+                self._rngs[lane] = np.random.default_rng(lane_seed)
+            game_seeds[lane] = int(
+                self._rngs[lane].integers(
+                    0,
+                    np.iinfo(np.uint32).max + 1,
+                    dtype=np.uint32,
+                )
+            )
+            if self.noop_reset_max:
+                noop_counts[lane] = self._rngs[lane].integers(
+                    1, self.noop_reset_max + 1
+                )
+        futures = {}
+        for lane in np.flatnonzero(mask):
+            lane_index = int(lane)
+            snapshot = snapshot_values[lane_index]
+            asset = (
+                None
+                if snapshot is not None
+                else self._assets[int(state_indices[lane_index])]
+            )
+            futures[lane_index] = self._pool.submit(
+                self._reset_lane,
+                lane_index,
+                game_seeds[lane_index],
+                asset,
+                snapshot,
+                int(noop_counts[lane_index]),
+            )
+        for lane, future in futures.items():
+            raw, raw_signals = future.result()
+            self._raw_frames[lane] = raw
+            width = len(self._game_variables)
+            self._signals[lane, :width] = raw_signals
+        self._preprocess()
+        self._active_state_indices.setflags(write=True)
+        for lane in np.flatnonzero(mask):
+            lane_index = int(lane)
+            snapshot = snapshot_values[lane_index]
+            if snapshot is None:
+                self._stack[lane_index] = self._processed[lane_index]
+                self._stack_heads[lane_index] = 0
+                self._episode_returns[lane_index] = 0.0
+                self._last_actions[lane_index] = 0.0
+                self._active_state_indices[lane_index] = state_indices[lane_index]
+                self._episode_origins[lane_index] = _EpisodeOrigin(
+                    game_seed=int(game_seeds[lane_index]),
+                    state_index=int(state_indices[lane_index]),
+                    noop_count=int(noop_counts[lane_index]),
+                )
+                self._action_history[lane_index] = []
+            else:
+                self._stack[lane_index] = snapshot.stack
+                self._stack_heads[lane_index] = snapshot.stack_head
+                self._raw_frames[lane_index] = snapshot.raw_frame
+                self._rngs[lane_index].bit_generator.state = copy.deepcopy(
+                    snapshot.rng_state
+                )
+                self._last_actions[lane_index] = snapshot.last_action
+                self._active_state_indices[lane_index] = snapshot.state_index
+                self._episode_returns[lane_index] = snapshot.episode_return
+                self._episode_origins[lane_index] = snapshot.origin
+                self._action_history[lane_index] = [
+                    action.copy() for action in snapshot.action_history
+                ]
+        self._active_state_indices.setflags(write=False)
+        self._initialized[mask] = True
+        self._pending_reset[mask] = False
+        for lane in np.flatnonzero(mask):
+            self._update_signal_row(int(lane))
+        observations, _rewards, _terminated, _truncated = self._next_buffers()
+        self._write_observations(observations)
+        infos = self._infos(mask.copy())
+        active_labels = np.asarray(
+            [self.state_catalog[index] for index in self._active_state_indices],
+            dtype=object,
+        )
+        for key in ("start_id", "state", "start_state"):
+            infos[key] = active_labels.copy()
+            infos[f"_{key}"] = mask.copy()
+        infos["state_index"] = self._active_state_indices.copy()
+        infos["_state_index"] = mask.copy()
+        source = np.full(self.num_envs, "environment", dtype=object)
+        source[snapshot_mask] = "snapshot"
+        infos["start_source"] = source
+        infos["_start_source"] = mask.copy()
+        infos["noop_reset_count"] = noop_counts
+        infos["_noop_reset_count"] = static_mask.copy()
+        self._seed_values = [None] * self.num_envs
+        self._options = [None] * self.num_envs
+        return self._returned_obs(observations), infos
+
+    def _native_actions(self, actions: Any) -> np.ndarray:
+        if self._custom_actions is not None:
+            values = np.asarray(actions, dtype=np.int64).reshape(-1)
+            if values.shape != (self.num_envs,):
+                raise ValueError(f"actions must have shape ({self.num_envs},)")
+            if values.size and (
+                int(values.min()) < 0 or int(values.max()) >= len(self._custom_actions)
+            ):
+                raise ValueError(
+                    f"actions must be in [0, {len(self._custom_actions) - 1}]"
+                )
+            return self._custom_actions[values]
+        values = np.asarray(actions, dtype=np.float64)
+        expected = (self.num_envs, len(self.buttons))
+        if values.shape != expected:
+            raise ValueError(f"actions must have shape {expected}")
+        if np.any(self._binary & np.any((values != 0.0) & (values != 1.0), axis=0)):
+            raise ValueError("binary ViZDoom actions must contain only 0 or 1")
+        if np.all(self._binary):
+            return values
+        low = np.asarray(self.single_action_space.low, dtype=np.float64)
+        high = np.asarray(self.single_action_space.high, dtype=np.float64)
+        if np.any(values < low) or np.any(values > high):
+            raise ValueError("actions are outside the declared action space")
+        return values
+
+    def _step_lane(
+        self,
+        lane: int,
+        action: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, float, bool, bool, np.ndarray]:
+        lane_game = self._games[lane]
+        fallback = self._raw_frames[lane]
+        lane_game.set_action(action.tolist())
+        total_before = float(lane_game.get_total_reward())
+        previous = fallback
+        if self.maxpool_last_two and self.frame_skip > 1:
+            lane_game.advance_action(self.frame_skip - 1, True)
+            previous = self._read_screen(lane_game, fallback)
+            if not lane_game.is_episode_finished():
+                lane_game.advance_action(1, True)
+        else:
+            lane_game.advance_action(self.frame_skip, True)
+        reward = float(lane_game.get_total_reward()) - total_before
+        raw = self._read_screen(lane_game, previous)
+        finished = bool(lane_game.is_episode_finished())
+        timeout = bool(lane_game.is_episode_timeout_reached()) if finished else False
+        truncated = finished and timeout and self.treat_episode_timeout_as_truncation
+        terminated = finished and not truncated
+        return raw, previous, reward, terminated, truncated, self._raw_signals(lane_game)
+
+    def step(self, actions: Any):
+        if self.closed:
+            raise RuntimeError("cannot step a closed environment")
+        if not np.all(self._initialized):
+            raise RuntimeError("all lanes must be reset before the first step")
+        if np.any(self._pending_reset):
+            lanes = np.flatnonzero(self._pending_reset).tolist()
+            raise RuntimeError(f"terminal lanes must be reset before step: {lanes}")
+        requested = self._native_actions(actions)
+        applied = requested.copy()
+        if self.sticky_action_prob:
+            for lane in range(self.num_envs):
+                if self._rngs[lane].random() < self.sticky_action_prob:
+                    applied[lane] = self._last_actions[lane]
+                else:
+                    self._last_actions[lane] = requested[lane]
+        else:
+            self._last_actions[:] = requested
+        futures = [
+            self._pool.submit(self._step_lane, lane, applied[lane])
+            for lane in range(self.num_envs)
+        ]
+        observations, rewards, terminated, truncated = self._next_buffers()
+        for lane, future in enumerate(futures):
+            raw, previous, reward, lane_terminated, lane_truncated, raw_signals = (
+                future.result()
+            )
+            self._raw_frames[lane] = raw
+            self._previous_raw[lane] = previous
+            rewards[lane] = reward
+            terminated[lane] = lane_terminated
+            truncated[lane] = lane_truncated
+            width = len(self._game_variables)
+            self._signals[lane, :width] = raw_signals
+            self._action_history[lane].append(applied[lane].copy())
+        if self.reward_clip is not None:
+            np.clip(rewards, self.reward_clip[0], self.reward_clip[1], out=rewards)
+        self._preprocess(self._previous_raw if self.maxpool_last_two else None)
+        self._stack_heads = (self._stack_heads + 1) % self.frame_stack
+        for lane in range(self.num_envs):
+            self._stack[lane, self._stack_heads[lane]] = self._processed[lane]
+        self._write_observations(observations)
+        self._episode_returns += rewards
+        np.logical_or(terminated, truncated, out=self._pending_reset)
+        for lane in range(self.num_envs):
+            self._update_signal_row(lane)
+        return (
+            self._returned_obs(observations),
+            rewards,
+            terminated,
+            truncated,
+            self._infos(),
+        )
+
+    def active_state_indices(self) -> np.ndarray:
+        return self._active_state_indices
+
+    def active_states(self) -> tuple[str, ...]:
+        return tuple(self.state_catalog[index] for index in self._active_state_indices)
+
+    def capture_snapshots(self, mask: np.ndarray) -> tuple[Any | None, ...]:
+        if self.closed:
+            raise RuntimeError("cannot capture snapshots from a closed environment")
+        if not isinstance(mask, np.ndarray):
+            raise TypeError("mask must be a NumPy array")
+        if mask.shape != (self.num_envs,):
+            raise ValueError(f"mask must have shape ({self.num_envs},)")
+        if mask.dtype != np.bool_:
+            raise TypeError("mask must have dtype np.bool_")
+        if not np.any(mask):
+            raise ValueError("mask must select at least one lane")
+        if not np.all(self._initialized[mask]):
+            raise RuntimeError("cannot capture a lane before its initial reset")
+        if np.any(self._pending_reset[mask]):
+            raise RuntimeError("cannot capture a terminal lane")
+        result: list[_LiveSnapshot | None] = [None] * self.num_envs
+        for selected_lane in np.flatnonzero(mask):
+            lane = int(selected_lane)
+            history = np.asarray(
+                self._action_history[lane], dtype=np.float64
+            ).reshape((-1, len(self.buttons)))
+            result[lane] = _LiveSnapshot(
+                owner=self._owner,
+                config_hash=self._config_hash,
+                origin=self._episode_origins[lane],
+                action_history=history,
+                stack=self._stack[lane].copy(),
+                stack_head=int(self._stack_heads[lane]),
+                raw_frame=self._raw_frames[lane].copy(),
+                rng_state=copy.deepcopy(self._rngs[lane].bit_generator.state),
+                last_action=self._last_actions[lane].copy(),
+                state_index=int(self._active_state_indices[lane]),
+                episode_return=float(self._episode_returns[lane]),
+            )
+        return tuple(result)
+
+    def render_lane(self, lane: int) -> np.ndarray:
+        if self.closed:
+            raise RuntimeError("cannot render a closed environment")
+        if isinstance(lane, (bool, np.bool_)):
+            raise TypeError("lane must be an integer")
+        lane_index = operator.index(lane)
+        if not 0 <= lane_index < self.num_envs:
+            raise IndexError(f"lane must be in [0, {self.num_envs - 1}]")
+        return self._raw_frames[lane_index].copy()
+
+    def render(self):
+        return self.render_lane(0)
+
+    def get_images(self) -> list[np.ndarray]:
+        return [frame.copy() for frame in self._raw_frames]
+
+    def close(self) -> None:
+        if getattr(self, "closed", True):
+            return
+        self.closed = True
+        pool = getattr(self, "_pool", None)
+        games = getattr(self, "_games", ())
+        if pool is not None:
+            futures = [pool.submit(game.close) for game in games]
+            for future in futures:
+                try:
+                    future.result()
+                except Exception:
+                    pass
+            pool.shutdown(wait=True)
+        tempdir = getattr(self, "_tempdir", None)
+        if tempdir is not None:
+            tempdir.cleanup()
+
+
+VizDoomTurboVecEnv = VizdoomTurboVecEnv
+
+__all__ = ["VizDoomTurboVecEnv", "VizdoomTurboVecEnv", "scenario_buttons"]

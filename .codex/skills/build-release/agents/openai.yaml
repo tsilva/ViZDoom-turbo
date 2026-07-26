@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build Release"
+  short_description: "Build and publish PyPI releases"
+  default_prompt: "Use $build-release to validate, tag, publish, and verify a vizdoom-turbo release."

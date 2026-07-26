@@ -1,7 +1,7 @@
 <div align="center">
   <strong>⚡ High-throughput ViZDoom rollouts, native-vector by design. ⚡</strong>
   <br /><br />
-  <img src="./logo.png" alt="ViZDoom-turbo" width="420" />
+  <img src="https://raw.githubusercontent.com/tsilva/ViZDoom-turbo-fork/turbo/logo.png" alt="ViZDoom-turbo" width="420" />
 </div>
 
 `vizdoom-turbo` is a Python library for reinforcement-learning researchers who need fast, parallel ViZDoom environments. It provides a Gymnasium vector environment that can be used directly or selected as an isolated environment provider in `rlab`.
@@ -107,9 +107,8 @@ uv build --wheel                                          # build the distributa
 
 ## Architecture
 
-![vizdoom-turbo architecture](./architecture.png)
+![vizdoom-turbo architecture](https://raw.githubusercontent.com/tsilva/ViZDoom-turbo-fork/turbo/architecture.png)
 
 ## License
 
-The `vizdoom-turbo` additions are [MIT licensed](turbo/LICENSE). ViZDoom and its
-ZDoom-derived engine retain their upstream licensing terms.
+[MIT](LICENSE)

@@ -1,0 +1,25 @@
+[package]
+name = "vizdoom-turbo"
+version = "0.1.1"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Native batched preprocessing for vizdoom-turbo"
+repository = "https://github.com/tsilva/ViZDoom-turbo-fork"
+readme = "README.md"
+
+[lib]
+name = "_vizdoom_turbo"
+crate-type = ["cdylib"]
+
+[dependencies]
+numpy = "0.29.0"
+pyo3 = { version = "0.29.0", features = ["abi3-py311"] }
+rayon = "1.12.0"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+panic = "abort"
+strip = "symbols"
