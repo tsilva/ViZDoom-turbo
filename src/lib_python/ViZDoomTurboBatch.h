@@ -1,0 +1,89 @@
+/*
+ Copyright (C) 2026 by the ViZDoom-turbo contributors
+
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+
+ The above copyright notice and this permission notice shall be included in
+ all copies or substantial portions of the Software.
+
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ THE SOFTWARE.
+*/
+
+#ifndef __VIZDOOM_TURBO_BATCH_H__
+#define __VIZDOOM_TURBO_BATCH_H__
+
+#include "ViZDoomGamePython.h"
+
+#include <pybind11/numpy.h>
+#include <pybind11/pybind11.h>
+
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+namespace vizdoom {
+
+    class TurboBatchStepper {
+    public:
+        TurboBatchStepper(
+            pyb::list games,
+            unsigned int frameSkip,
+            bool treatTimeoutAsTruncation,
+            pyb::array_t<double, pyb::array::c_style> actions,
+            pyb::array_t<uint8_t, pyb::array::c_style> frames,
+            pyb::array_t<uint8_t, pyb::array::c_style> palettes,
+            pyb::array_t<float, pyb::array::c_style> rewards,
+            pyb::array_t<bool, pyb::array::c_style> terminated,
+            pyb::array_t<bool, pyb::array::c_style> truncated,
+            pyb::array_t<double, pyb::array::c_style> gameVariables);
+
+        void stepLaneInto(size_t lane);
+        void readLaneInto(size_t lane);
+        pyb::array_t<uint8_t> indexedFrameView(size_t lane);
+        pyb::array_t<uint8_t> paletteView(size_t lane);
+        pyb::tuple nativeApi();
+
+    private:
+        void stepLaneNative(size_t lane);
+        static unsigned int nativeStepLane(void *context, size_t lane) noexcept;
+        static const uint8_t *nativeFrame(void *context, size_t lane) noexcept;
+        static const uint8_t *nativePalette(void *context, size_t lane) noexcept;
+
+        pyb::list gameOwners;
+        std::vector<DoomGamePython *> games;
+        unsigned int frameSkip;
+        bool treatTimeoutAsTruncation;
+        size_t actionWidth;
+        size_t frameSize;
+        size_t gameVariablesWidth;
+
+        pyb::array_t<double, pyb::array::c_style> actions;
+        pyb::array_t<uint8_t, pyb::array::c_style> frames;
+        pyb::array_t<uint8_t, pyb::array::c_style> palettes;
+        pyb::array_t<float, pyb::array::c_style> rewards;
+        pyb::array_t<bool, pyb::array::c_style> terminated;
+        pyb::array_t<bool, pyb::array::c_style> truncated;
+        pyb::array_t<double, pyb::array::c_style> gameVariables;
+
+        double *actionsData;
+        uint8_t *framesData;
+        uint8_t *palettesData;
+        float *rewardsData;
+        bool *terminatedData;
+        bool *truncatedData;
+        double *gameVariablesData;
+    };
+}
+
+#endif

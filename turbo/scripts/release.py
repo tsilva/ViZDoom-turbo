@@ -29,9 +29,6 @@ RELEASE_FILES = (
 VERSION_RE = re.compile(
     r"^(?P<base>[0-9]+\.[0-9]+\.[0-9]+)(?:\.post(?P<post>[0-9]+))?$"
 )
-UPSTREAM_DEPENDENCY_RE = re.compile(
-    r"^vizdoom==(?P<version>[0-9]+\.[0-9]+\.[0-9]+)$"
-)
 
 
 def run(
@@ -153,18 +150,19 @@ def parse_version(version: str) -> tuple[str, int]:
 
 def upstream_vizdoom_version() -> str:
     with (PACKAGE_ROOT / "pyproject.toml").open("rb") as stream:
-        project = tomllib.load(stream)["project"]
-    matches = []
-    for dependency in project.get("dependencies", []):
-        match = UPSTREAM_DEPENDENCY_RE.fullmatch(dependency)
-        if match is not None:
-            matches.append(match.group("version"))
-    if len(matches) != 1:
+        metadata = tomllib.load(stream)
+    tool = metadata.get("tool", {})
+    turbo = tool.get("vizdoom-turbo", {})
+    version = turbo.get("upstream-vizdoom-version")
+    if not isinstance(version, str) or re.fullmatch(
+        r"[0-9]+\.[0-9]+\.[0-9]+",
+        version,
+    ) is None:
         raise SystemExit(
-            "pyproject.toml must contain exactly one exact "
-            "'vizdoom==MAJOR.MINOR.PATCH' dependency"
+            "tool.vizdoom-turbo.upstream-vizdoom-version must be "
+            "MAJOR.MINOR.PATCH"
         )
-    return matches[0]
+    return version
 
 
 def next_post_version(current: str, upstream_base: str) -> str:

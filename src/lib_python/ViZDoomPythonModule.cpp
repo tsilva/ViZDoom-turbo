@@ -24,6 +24,7 @@
 
 #include "ViZDoom.h"
 #include "ViZDoomGamePython.h"
+#include "ViZDoomTurboBatch.h"
 #include "ViZDoomVersion.h"
 #include "ViZDoomMethodsDocstrings.h"
 #include "ViZDoomObjectsDocstrings.h"
@@ -807,6 +808,35 @@ PYBIND11_MODULE(vizdoom, vz){
         CLASS_FUNC_2_PYT("get_screen_size", DoomGamePython::getScreenSize)
         CLASS_FUNC_2_PYT("get_screen_pitch", DoomGamePython::getScreenPitch)
         CLASS_FUNC_2_PYT("get_screen_format", DoomGamePython::getScreenFormat);
+
+    pyb::class_<TurboBatchStepper>(vz, "_TurboBatchStepper")
+        .def(
+            pyb::init<
+                pyb::list,
+                unsigned int,
+                bool,
+                pyb::array_t<double, pyb::array::c_style>,
+                pyb::array_t<uint8_t, pyb::array::c_style>,
+                pyb::array_t<uint8_t, pyb::array::c_style>,
+                pyb::array_t<float, pyb::array::c_style>,
+                pyb::array_t<bool, pyb::array::c_style>,
+                pyb::array_t<bool, pyb::array::c_style>,
+                pyb::array_t<double, pyb::array::c_style>>(),
+            pyb::arg("games"),
+            pyb::arg("frame_skip"),
+            pyb::arg("treat_timeout_as_truncation"),
+            pyb::arg("actions"),
+            pyb::arg("frames"),
+            pyb::arg("palettes"),
+            pyb::arg("rewards"),
+            pyb::arg("terminated"),
+            pyb::arg("truncated"),
+            pyb::arg("game_variables"))
+        .def("step_lane_into", &TurboBatchStepper::stepLaneInto, pyb::arg("lane"))
+        .def("read_lane_into", &TurboBatchStepper::readLaneInto, pyb::arg("lane"))
+        .def("indexed_frame_view", &TurboBatchStepper::indexedFrameView, pyb::arg("lane"))
+        .def("palette_view", &TurboBatchStepper::paletteView, pyb::arg("lane"))
+        .def("native_api", &TurboBatchStepper::nativeApi);
 
 
     /* Utilities */

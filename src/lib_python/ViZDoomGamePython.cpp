@@ -270,6 +270,91 @@ namespace vizdoom {
         DoomGame::respawnPlayer();
     }
 
+    void DoomGamePython::turboStepInto(
+        const double *action,
+        size_t actionSize,
+        unsigned int tics,
+        uint8_t *frame,
+        size_t frameSize,
+        uint8_t *palette,
+        size_t paletteSize,
+        float &reward,
+        bool &terminated,
+        bool &truncated,
+        double *gameVariables,
+        size_t gameVariablesSize,
+        bool treatTimeoutAsTruncation) {
+        if (!this->isRunning()) throw ViZDoomIsNotRunningException();
+        if (actionSize != this->availableButtons.size())
+            throw std::invalid_argument("action width does not match available buttons");
+        if (frame != nullptr && frameSize != this->doomController->getScreenSize())
+            throw std::invalid_argument("frame size does not match the Doom screen");
+        if (palette != nullptr && paletteSize != 256 * 3)
+            throw std::invalid_argument("palette must contain 256 RGB entries");
+        if ((frame == nullptr) != (palette == nullptr))
+            throw std::invalid_argument("frame and palette outputs must both be present or absent");
+        if (gameVariablesSize != this->availableGameVariables.size())
+            throw std::invalid_argument("game variable width does not match available variables");
+
+        for (size_t index = 0; index < actionSize; ++index) {
+            this->nextAction[index] = action[index];
+            this->doomController->setButtonState(
+                this->availableButtons[index],
+                this->nextAction[index]);
+        }
+
+        const double totalBefore = this->summaryReward;
+        if (this->doomController->isTicPossible()) {
+            this->doomController->tics(tics, true);
+            if (this->doomController->isAllowDoomInput() ||
+                this->doomController->isReplaying()) {
+                for (size_t index = 0; index < this->availableButtons.size(); ++index) {
+                    this->lastAction[index] =
+                        this->doomController->getButtonState(this->availableButtons[index]);
+                }
+            }
+            else {
+                this->lastAction = this->nextAction;
+            }
+            this->updateReward();
+            if (this->doomController->isRunDoomAsync())
+                this->lastMapTic = this->doomController->getMapTic();
+            else
+                this->lastMapTic = this->doomController->getMapLastTic();
+        }
+
+        const bool finished = this->isEpisodeFinished();
+        const bool timeout = finished && this->isEpisodeTimeoutReached();
+        truncated = finished && timeout && treatTimeoutAsTruncation;
+        terminated = finished && !truncated;
+        if (!finished && frame != nullptr) {
+            uint8_t *screen = this->doomController->getScreenBuffer();
+            if (screen == nullptr) throw std::runtime_error("Doom screen buffer is unavailable");
+            std::memcpy(frame, screen, frameSize);
+            std::memcpy(palette, this->doomController->getScreenPalette(), paletteSize);
+        }
+        reward = static_cast<float>(this->summaryReward - totalBefore);
+
+        for (size_t index = 0; index < gameVariablesSize; ++index) {
+            gameVariables[index] =
+                this->doomController->getGameVariable(this->availableGameVariables[index]);
+        }
+    }
+
+    void DoomGamePython::turboReadIndexedInto(
+        uint8_t *frame,
+        size_t frameSize,
+        uint8_t *palette,
+        size_t paletteSize) {
+        if (!this->isRunning()) throw ViZDoomIsNotRunningException();
+        if (frameSize != this->doomController->getScreenSize())
+            throw std::invalid_argument("frame size does not match the Doom screen");
+        if (paletteSize != 256 * 3)
+            throw std::invalid_argument("palette must contain 256 RGB entries");
+        std::memcpy(frame, this->doomController->getScreenBuffer(), frameSize);
+        std::memcpy(palette, this->doomController->getScreenPalette(), paletteSize);
+    }
+
     void DoomGamePython::updateBuffersShapes(){
         int channels = this->getScreenChannels();
         int width = this->getScreenWidth();

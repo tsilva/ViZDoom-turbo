@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import operator
+import os
 import secrets
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -485,12 +486,47 @@ class VizdoomTurboVecEnv(VectorEnv):
             state, state_catalog, state_dir
         )
         self.state_catalog = tuple(asset.label for asset in self._assets)
+        self._native_stepper_type = getattr(vzd, "_TurboBatchStepper", None)
+        native_stepper_available = (
+            self._native_stepper_type is not None
+            and all(
+                hasattr(self._native_stepper_type, name)
+                for name in (
+                    "indexed_frame_view",
+                    "native_api",
+                    "palette_view",
+                    "step_lane_into",
+                )
+            )
+        )
+        native_processor_available = all(
+            hasattr(ImageProcessor, name)
+            for name in (
+                "reset_native_batch_into",
+                "step_native_batch_into",
+            )
+        )
+        self._use_indexed_native = (
+            native_stepper_available
+            and native_processor_available
+            and os.environ.get("VIZDOOM_TURBO_DISABLE_NATIVE_PIPELINE") != "1"
+            and not self.maxpool_last_two
+            and self.obs_grayscale
+            and self.obs_resize_algorithm == "area"
+            and self.obs_crop == (0, 0, 0, 0)
+            and obs_resize == (84, 84)
+        )
 
         self._tempdir = tempfile.TemporaryDirectory(prefix="vizdoom-turbo-")
         template = self._new_game()
         try:
             self.raw_width = int(template.get_screen_width())
             self.raw_height = int(template.get_screen_height())
+            self._use_indexed_native = (
+                self._use_indexed_native
+                and self.raw_width == 320
+                and self.raw_height == 240
+            )
             self._button_enums = tuple(template.get_available_buttons())
             self.buttons = tuple(_enum_name(button) for button in self._button_enums)
             self._binary = np.asarray(
@@ -560,11 +596,15 @@ class VizdoomTurboVecEnv(VectorEnv):
             self.num_threads,
         )
         raw_shape = (self.raw_height, self.raw_width, 3)
+        self._raw_frame_batch = np.zeros((self.num_envs, *raw_shape), dtype=np.uint8)
         self._raw_frames = [
-            np.zeros(raw_shape, dtype=np.uint8) for _ in range(self.num_envs)
+            self._raw_frame_batch[lane] for lane in range(self.num_envs)
         ]
+        self._previous_raw_batch = np.zeros(
+            (self.num_envs, *raw_shape), dtype=np.uint8
+        )
         self._previous_raw = [
-            np.zeros(raw_shape, dtype=np.uint8) for _ in range(self.num_envs)
+            self._previous_raw_batch[lane] for lane in range(self.num_envs)
         ]
         buffer_count = 1 if self.obs_copy == "unsafe_view" else 2
         self._obs_buffers = [
@@ -676,6 +716,64 @@ class VizdoomTurboVecEnv(VectorEnv):
         except BaseException:
             self.close()
             raise
+        self._native_stepper = None
+        if (
+            self._use_indexed_native
+            and hasattr(self._image_processor, "step_native_batch_into")
+            and hasattr(self._image_processor, "reset_native_batch_into")
+        ):
+            self._native_actions_buffer = np.empty(
+                (self.num_envs, len(self._button_enums)), dtype=np.float64
+            )
+            self._native_rewards = np.empty(self.num_envs, dtype=np.float32)
+            self._native_terminated = np.empty(self.num_envs, dtype=np.bool_)
+            self._native_truncated = np.empty(self.num_envs, dtype=np.bool_)
+            self._native_game_variables = np.empty(
+                (self.num_envs, len(self._game_variables)), dtype=np.float64
+            )
+            self._native_indexed_frames = np.empty(
+                (self.num_envs, self.raw_height, self.raw_width), dtype=np.uint8
+            )
+            self._native_palettes = np.empty(
+                (self.num_envs, 256, 3), dtype=np.uint8
+            )
+            self._native_stepper = self._native_stepper_type(
+                self._games,
+                self.frame_skip,
+                self.treat_episode_timeout_as_truncation,
+                self._native_actions_buffer,
+                self._native_indexed_frames,
+                self._native_palettes,
+                self._native_rewards,
+                self._native_terminated,
+                self._native_truncated,
+                self._native_game_variables,
+            )
+            self._native_indexed_storage = self._native_indexed_frames
+            self._native_palette_storage = self._native_palettes
+            self._native_indexed_frames = tuple(
+                self._native_stepper.indexed_frame_view(lane)
+                for lane in range(self.num_envs)
+            )
+            self._native_palettes = tuple(
+                self._native_stepper.palette_view(lane)
+                for lane in range(self.num_envs)
+            )
+            self._native_api = self._native_stepper.native_api()
+            self._native_stack_lanes = tuple(
+                self._stack[lane] for lane in range(self.num_envs)
+            )
+            self._native_head_lanes = tuple(
+                self._stack_heads[lane : lane + 1] for lane in range(self.num_envs)
+            )
+            self._native_observation_lanes = {
+                id(buffer): tuple(buffer[lane] for lane in range(self.num_envs))
+                for buffer in self._obs_buffers
+            }
+            self._active_native_observation_lanes = ()
+            self._native_jobs = [
+                (self._step_native_lane, (lane,)) for lane in range(self.num_envs)
+            ]
 
     def _new_game(self):
         game = vzd.DoomGame()
@@ -689,7 +787,11 @@ class VizdoomTurboVecEnv(VectorEnv):
         game.set_window_visible(False)
         game.set_sound_enabled(False)
         game.set_audio_buffer_enabled(False)
-        game.set_screen_format(vzd.ScreenFormat.RGB24)
+        game.set_screen_format(
+            vzd.ScreenFormat.DOOM_256_COLORS8
+            if self._use_indexed_native
+            else vzd.ScreenFormat.RGB24
+        )
         game.set_mode(vzd.Mode.PLAYER)
         if self._rom_path:
             game.set_doom_game_path(str(Path(self._rom_path).expanduser()))
@@ -911,7 +1013,11 @@ class VizdoomTurboVecEnv(VectorEnv):
             if noop_count:
                 lane_game.set_action([0.0] * len(self._button_enums))
                 lane_game.advance_action(noop_count, True)
-        raw = self._read_screen(lane_game, self._raw_frames[lane])
+        if self._native_stepper is not None:
+            self._native_stepper.read_lane_into(lane)
+            raw = self._raw_frames[lane]
+        else:
+            raw = self._read_screen(lane_game, self._raw_frames[lane])
         return raw, self._raw_signals(lane_game)
 
     def seed(self, seed: int | None = None) -> list[int | None]:
@@ -1037,7 +1143,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         for lane, (raw, raw_signals) in zip(
             reset_lanes, self._pool.run(reset_jobs), strict=True
         ):
-            self._raw_frames[lane] = raw
+            self._raw_frames[lane][...] = raw
             if raw_signals is not None:
                 width = len(self._game_variables)
                 self._signals[lane, :width] = raw_signals
@@ -1059,7 +1165,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             else:
                 self._stack[lane_index] = snapshot.stack
                 self._stack_heads[lane_index] = snapshot.stack_head
-                self._raw_frames[lane_index] = snapshot.raw_frame
+                self._raw_frames[lane_index][...] = snapshot.raw_frame
                 self._rngs[lane_index].bit_generator.state = copy.deepcopy(
                     snapshot.rng_state
                 )
@@ -1075,13 +1181,31 @@ class VizdoomTurboVecEnv(VectorEnv):
             for lane in np.flatnonzero(mask):
                 self._update_signal_row(int(lane))
         observations, _rewards, _terminated, _truncated = self._next_buffers()
-        self._image_processor.reset_frames_into(
-            self._raw_frames,
-            self._stack,
-            self._stack_heads,
-            observations,
-            static_mask,
-        )
+        if self._native_stepper is not None:
+            self._image_processor.reset_native_batch_into(
+                self._native_api[0],
+                self._native_api[2],
+                self._native_api[3],
+                static_mask,
+                self._stack,
+                self._stack_heads,
+                observations,
+            )
+            self._image_processor.reset_frames_into(
+                self._raw_frames,
+                self._stack,
+                self._stack_heads,
+                observations,
+                np.zeros(self.num_envs, dtype=np.bool_),
+            )
+        else:
+            self._image_processor.reset_frames_into(
+                self._raw_frames,
+                self._stack,
+                self._stack_heads,
+                observations,
+                static_mask,
+            )
         infos = self._infos(mask.copy())
         infos["state_index"] = self._active_state_indices.copy()
         infos["_state_index"] = mask.copy()
@@ -1146,6 +1270,29 @@ class VizdoomTurboVecEnv(VectorEnv):
         terminated = finished and not truncated
         return raw, previous, reward, terminated, truncated, self._raw_signals(lane_game)
 
+    def _step_native_lane(self, lane: int) -> None:
+        self._native_stepper.step_lane_into(lane)
+        if self._native_terminated[lane] or self._native_truncated[lane]:
+            self._image_processor.repeat_last_lane_into(
+                self._native_stack_lanes[lane],
+                self._native_head_lanes[lane],
+                self._active_native_observation_lanes[lane],
+            )
+        else:
+            self._image_processor.step_indexed_lane_into(
+                self._native_indexed_frames[lane],
+                self._native_palettes[lane],
+                self._native_stack_lanes[lane],
+                self._native_head_lanes[lane],
+                self._active_native_observation_lanes[lane],
+            )
+
+    def _sync_native_rgb(self, lane: int) -> None:
+        if self._native_stepper is not None:
+            self._raw_frames[lane][...] = self._native_palettes[lane][
+                self._native_indexed_frames[lane]
+            ]
+
     def step(self, actions: Any):
         if self.closed:
             raise RuntimeError("cannot step a closed environment")
@@ -1164,39 +1311,55 @@ class VizdoomTurboVecEnv(VectorEnv):
                     self._last_actions[lane] = requested[lane]
         else:
             self._last_actions[:] = requested
-        results = self._pool.run(
-            [
-                (self._step_lane, (lane, applied[lane]))
-                for lane in range(self.num_envs)
-            ]
-        )
         observations, rewards, terminated, truncated = self._next_buffers()
-        for lane, (
-            raw,
-            previous,
-            reward,
-            lane_terminated,
-            lane_truncated,
-            raw_signals,
-        ) in enumerate(results):
-            self._raw_frames[lane] = raw
-            self._previous_raw[lane] = previous
-            rewards[lane] = reward
-            terminated[lane] = lane_terminated
-            truncated[lane] = lane_truncated
-            if raw_signals is not None:
+        if self._native_stepper is not None:
+            self._native_actions_buffer[...] = applied
+            self._image_processor.step_native_batch_into(
+                *self._native_api,
+                self._stack,
+                self._stack_heads,
+                observations,
+            )
+            rewards[...] = self._native_rewards
+            terminated[...] = self._native_terminated
+            truncated[...] = self._native_truncated
+            if self._collect_game_variables:
                 width = len(self._game_variables)
-                self._signals[lane, :width] = raw_signals
+                self._signals[:, :width] = self._native_game_variables
+        else:
+            results = self._pool.run(
+                [
+                    (self._step_lane, (lane, applied[lane]))
+                    for lane in range(self.num_envs)
+                ]
+            )
+            for lane, (
+                raw,
+                previous,
+                reward,
+                lane_terminated,
+                lane_truncated,
+                raw_signals,
+            ) in enumerate(results):
+                self._raw_frames[lane][...] = raw
+                self._previous_raw[lane][...] = previous
+                rewards[lane] = reward
+                terminated[lane] = lane_terminated
+                truncated[lane] = lane_truncated
+                if raw_signals is not None:
+                    width = len(self._game_variables)
+                    self._signals[lane, :width] = raw_signals
         self._action_history.append(applied)
         if self.reward_clip is not None:
             np.clip(rewards, self.reward_clip[0], self.reward_clip[1], out=rewards)
-        self._image_processor.step_frames_into(
-            self._raw_frames,
-            self._stack,
-            self._stack_heads,
-            observations,
-            self._previous_raw if self.maxpool_last_two else None,
-        )
+        if self._native_stepper is None:
+            self._image_processor.step_frames_into(
+                self._raw_frames,
+                self._stack,
+                self._stack_heads,
+                observations,
+                self._previous_raw if self.maxpool_last_two else None,
+            )
         self._episode_returns += rewards
         np.logical_or(terminated, truncated, out=self._pending_reset)
         if self._info_mode != "none":
@@ -1231,6 +1394,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         result: list[_LiveSnapshot | None] = [None] * self.num_envs
         for selected_lane in np.flatnonzero(mask):
             lane = int(selected_lane)
+            self._sync_native_rgb(lane)
             history = np.asarray(
                 self._action_history.lane(lane), dtype=np.float64
             ).reshape((-1, len(self.buttons)))
@@ -1257,12 +1421,15 @@ class VizdoomTurboVecEnv(VectorEnv):
         lane_index = operator.index(lane)
         if not 0 <= lane_index < self.num_envs:
             raise IndexError(f"lane must be in [0, {self.num_envs - 1}]")
+        self._sync_native_rgb(lane_index)
         return self._raw_frames[lane_index].copy()
 
     def render(self):
         return self.render_lane(0)
 
     def get_images(self) -> list[np.ndarray]:
+        for lane in range(self.num_envs):
+            self._sync_native_rgb(lane)
         return [frame.copy() for frame in self._raw_frames]
 
     def close(self) -> None:

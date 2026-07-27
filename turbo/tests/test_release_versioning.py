@@ -57,3 +57,24 @@ def test_pinned_upstream_version_is_release_base(
     assert release_build.upstream_vizdoom_version() == "1.3.0"
     assert release_build.parse_version(release_build.project_version())[0] == "1.3.0"
     assert release_build.cargo_version() == "1.3.0"
+
+
+def test_custom_core_is_bundled_instead_of_a_runtime_dependency(
+    release_build: ModuleType,
+) -> None:
+    metadata = release_build.read_toml(REPO_ROOT / "turbo/pyproject.toml")
+    project = metadata["project"]
+    assert isinstance(project, dict)
+    dependencies = project["dependencies"]
+    assert isinstance(dependencies, list)
+    assert not any(
+        isinstance(dependency, str) and dependency.startswith("vizdoom")
+        for dependency in dependencies
+    )
+    assert metadata["build-system"]["build-backend"] == "build_backend"
+
+
+def test_release_matrix_covers_each_supported_cpython(
+    release_build: ModuleType,
+) -> None:
+    assert release_build.PYTHON_TAGS == ("cp311", "cp312", "cp313", "cp314")

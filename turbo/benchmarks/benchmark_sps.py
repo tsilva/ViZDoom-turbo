@@ -17,6 +17,9 @@ import numpy as np
 import vizdoom_turbo
 from vizdoom_turbo import VizdoomTurboVecEnv
 
+_SCALING_PROFILE = "scaling"
+_RLAB_PROFILE = "rlab-32x32"
+
 
 def _positive_int(value: str) -> int:
     parsed = int(value)
@@ -50,24 +53,39 @@ def _run_steps(env: VizdoomTurboVecEnv, actions: np.ndarray, count: int) -> None
 def _measure(
     num_envs: int,
     *,
+    profile: str,
     warmup_steps: int,
     measured_steps: int,
     samples: int,
 ) -> list[float]:
-    env = VizdoomTurboVecEnv(
-        game="VizdoomBasic-v1",
-        num_envs=num_envs,
-        num_threads=num_envs,
-        use_restricted_actions="minimal",
-        obs_resize=(84, 84),
-        obs_grayscale=True,
-        obs_layout="chw",
-        frame_skip=4,
-        frame_stack=4,
-        maxpool_last_two=True,
-        info_filter="none",
-        obs_copy="unsafe_view",
-    )
+    options = {
+        "game": "VizdoomBasic-v1",
+        "num_envs": num_envs,
+        "num_threads": num_envs,
+        "use_restricted_actions": "minimal",
+        "obs_resize": (84, 84),
+        "obs_grayscale": True,
+        "obs_layout": "chw",
+        "frame_skip": 4,
+        "frame_stack": 4,
+        "maxpool_last_two": True,
+        "info_filter": "none",
+        "obs_copy": "unsafe_view",
+    }
+    if profile == _RLAB_PROFILE:
+        options.update(
+            {
+                "num_threads": 32,
+                "use_restricted_actions": "discrete",
+                "obs_copy": "safe_view",
+                "maxpool_last_two": False,
+                "sticky_action_prob": 0.0,
+                "obs_resize_algorithm": "area",
+                "info_filter": {"mode": "all", "keys": ["killcount"]},
+                "game_variables": ["KILLCOUNT"],
+            }
+        )
+    env = VizdoomTurboVecEnv(**options)
     try:
         env.reset(seed=123)
         actions = np.arange(num_envs, dtype=np.int64) % env.single_action_space.n
@@ -85,38 +103,70 @@ def _measure(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--num-envs", type=_lane_counts, default=(1, 2, 4, 8, 16))
+    parser.add_argument(
+        "--profile",
+        choices=(_SCALING_PROFILE, _RLAB_PROFILE),
+        default=_SCALING_PROFILE,
+    )
+    parser.add_argument("--num-envs", type=_lane_counts)
     parser.add_argument("--warmup-steps", type=_positive_int, default=40)
     parser.add_argument("--measured-steps", type=_positive_int, default=250)
     parser.add_argument("--samples", type=_positive_int, default=7)
     parser.add_argument("--label", default="candidate")
     args = parser.parse_args()
 
+    if args.profile == _RLAB_PROFILE:
+        if args.num_envs not in (None, (32,)):
+            parser.error(f"{_RLAB_PROFILE} requires --num-envs 32")
+        num_env_counts = (32,)
+    else:
+        num_env_counts = args.num_envs or (1, 2, 4, 8, 16)
+
     try:
         package_version = version("vizdoom-turbo")
     except PackageNotFoundError:
         package_version = "unknown"
     runs = {}
-    for num_envs in args.num_envs:
+    for num_envs in num_env_counts:
         values = _measure(
             num_envs,
+            profile=args.profile,
             warmup_steps=args.warmup_steps,
             measured_steps=args.measured_steps,
             samples=args.samples,
         )
+        latencies_ms = [num_envs * 1000.0 / value for value in values]
         runs[str(num_envs)] = {
             "samples": values,
             "median_sps": statistics.median(values),
+            "vector_step_ms_samples": latencies_ms,
+            "median_vector_step_ms": statistics.median(latencies_ms),
         }
-    payload = {
-        "schema_version": 1,
-        "label": args.label,
-        "package_version": package_version,
-        "package_path": str(Path(vizdoom_turbo.__file__).resolve()),
-        "python": sys.version,
-        "platform": platform.platform(),
-        "cpu_count": os.cpu_count(),
-        "profile": {
+    if args.profile == _RLAB_PROFILE:
+        profile = {
+            "name": _RLAB_PROFILE,
+            "game": "VizdoomBasic-v1",
+            "num_envs": 32,
+            "num_threads": 32,
+            "use_restricted_actions": "discrete",
+            "obs_copy": "safe_view",
+            "obs_resize": [84, 84],
+            "obs_grayscale": True,
+            "obs_layout": "chw",
+            "frame_stack": 4,
+            "frame_skip": 4,
+            "maxpool_last_two": False,
+            "sticky_action_prob": 0.0,
+            "obs_resize_algorithm": "area",
+            "info_filter": {"mode": "all", "keys": ["killcount"]},
+            "game_variables": ["KILLCOUNT"],
+            "manual_terminal_reset": True,
+            "warmup_steps": args.warmup_steps,
+            "measured_steps": args.measured_steps,
+        }
+    else:
+        profile = {
+            "name": _SCALING_PROFILE,
             "game": "VizdoomBasic-v1",
             "observation": "uint8 84x84 grayscale CHW stack=4",
             "frame_skip": 4,
@@ -126,7 +176,16 @@ def main() -> int:
             "manual_terminal_reset": True,
             "warmup_steps": args.warmup_steps,
             "measured_steps": args.measured_steps,
-        },
+        }
+    payload = {
+        "schema_version": 1,
+        "label": args.label,
+        "package_version": package_version,
+        "package_path": str(Path(vizdoom_turbo.__file__).resolve()),
+        "python": sys.version,
+        "platform": platform.platform(),
+        "cpu_count": os.cpu_count(),
+        "profile": profile,
         "runs": runs,
     }
     print(json.dumps(payload, sort_keys=True))

@@ -32,14 +32,17 @@ RELEASE_PLATFORMS = (
 VERSION_PATTERN = re.compile(
     r"^(?P<base>[0-9]+\.[0-9]+\.[0-9]+)(?:\.post(?P<post>[0-9]+))?$"
 )
-UPSTREAM_DEPENDENCY_PATTERN = re.compile(
-    r"^vizdoom==(?P<version>[0-9]+\.[0-9]+\.[0-9]+)$"
-)
+PYTHON_TAGS = ("cp311", "cp312", "cp313", "cp314")
 
 
-def run(args: list[str], *, env: dict[str, str] | None = None) -> None:
+def run(
+    args: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    cwd: Path = PACKAGE_ROOT,
+) -> None:
     print("+", " ".join(args))
-    subprocess.run(args, cwd=PACKAGE_ROOT, env=env, check=True)
+    subprocess.run(args, cwd=cwd, env=env, check=True)
 
 
 def read_toml(path: Path) -> dict[str, object]:
@@ -86,22 +89,21 @@ def parse_version(version: str) -> tuple[str, int]:
 
 
 def upstream_vizdoom_version() -> str:
-    project = read_toml(PACKAGE_ROOT / "pyproject.toml")["project"]
-    assert isinstance(project, dict)
-    dependencies = project.get("dependencies", [])
-    assert isinstance(dependencies, list)
-    matches = []
-    for dependency in dependencies:
-        if isinstance(dependency, str):
-            match = UPSTREAM_DEPENDENCY_PATTERN.fullmatch(dependency)
-            if match is not None:
-                matches.append(match.group("version"))
-    if len(matches) != 1:
+    metadata = read_toml(PACKAGE_ROOT / "pyproject.toml")
+    tool = metadata.get("tool", {})
+    assert isinstance(tool, dict)
+    turbo = tool.get("vizdoom-turbo", {})
+    assert isinstance(turbo, dict)
+    version = turbo.get("upstream-vizdoom-version")
+    if not isinstance(version, str) or re.fullmatch(
+        r"[0-9]+\.[0-9]+\.[0-9]+",
+        version,
+    ) is None:
         raise SystemExit(
-            "pyproject.toml must contain exactly one exact "
-            "'vizdoom==MAJOR.MINOR.PATCH' dependency"
+            "tool.vizdoom-turbo.upstream-vizdoom-version must be "
+            "MAJOR.MINOR.PATCH"
         )
-    return matches[0]
+    return version
 
 
 def next_post_version(version: str) -> str:
@@ -221,29 +223,35 @@ def build_platform(args: argparse.Namespace) -> None:
         arch = args.platform.removeprefix("macos-")
         env["ARCHFLAGS"] = f"-arch {arch}"
         env["MACOSX_DEPLOYMENT_TARGET"] = "11.0" if arch == "arm64" else "10.15"
-        run(
-            [
-                sys.executable,
-                "-m",
-                "maturin",
-                "build",
-                "--release",
-                "--locked",
-                "--out",
-                str(output),
-            ],
-            env=env,
-        )
+        run([sys.executable, "scripts/stage_vizdoom_core.py", "build"], env=env)
+        try:
+            run(
+                [
+                    sys.executable,
+                    "-m",
+                    "maturin",
+                    "build",
+                    "--release",
+                    "--locked",
+                    "--out",
+                    str(output),
+                ],
+                env=env,
+            )
+        finally:
+            run([sys.executable, "scripts/stage_vizdoom_core.py", "clean"])
         return
     arch = args.platform.removeprefix("linux-")
+    python_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
     env.update(
         {
             "CIBW_ARCHS_LINUX": arch,
             "CIBW_BEFORE_ALL_LINUX": (
-                "curl https://sh.rustup.rs -sSf | "
+                "yum install -y cmake git boost-devel SDL2-devel "
+                "openal-soft-devel && curl https://sh.rustup.rs -sSf | "
                 "sh -s -- -y --profile minimal --default-toolchain stable"
             ),
-            "CIBW_BUILD": f"cp311-manylinux_{arch}",
+            "CIBW_BUILD": f"{python_tag}-manylinux_{arch}",
             "CIBW_BUILD_VERBOSITY": "1",
             "CIBW_ENVIRONMENT_LINUX": (
                 'PATH="$HOME/.cargo/bin:$PATH" '
@@ -258,12 +266,14 @@ def build_platform(args: argparse.Namespace) -> None:
             sys.executable,
             "-m",
             "cibuildwheel",
+            "turbo",
             "--platform",
             "linux",
             "--output-dir",
             str(output),
         ],
         env=env,
+        cwd=REPO_ROOT,
     )
 
 
@@ -290,24 +300,53 @@ def wheel_platform(wheel: Path) -> str | None:
     return None
 
 
+def wheel_python_tag(wheel: Path) -> str | None:
+    for tag in PYTHON_TAGS:
+        if f"-{tag}-{tag}-" in wheel.name:
+            return tag
+    return None
+
+
 def audit_wheel(wheel: Path, version: str) -> dict[str, object]:
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
+        metadata_name = next(
+            (name for name in names if name.endswith(".dist-info/METADATA")),
+            None,
+        )
+        metadata = (
+            archive.read(metadata_name).decode("utf-8")
+            if metadata_name is not None
+            else ""
+        )
     extension = [
         name
         for name in names
         if name.startswith(f"{IMPORT_NAME}/{EXTENSION_NAME}")
         and name.endswith((".so", ".pyd"))
     ]
+    core_extension = [
+        name
+        for name in names
+        if name.startswith("vizdoom/vizdoom.")
+        and name.endswith((".so", ".pyd"))
+    ]
     checks = {
         "version_in_filename": version in wheel.name,
-        "stable_abi": "abi3" in wheel.name,
+        "python_specific_abi": wheel_python_tag(wheel) is not None,
         "known_platform": wheel_platform(wheel) is not None,
         "has_init": f"{IMPORT_NAME}/__init__.py" in names,
         "has_environment": f"{IMPORT_NAME}/env.py" in names,
         "has_action_tables": f"{IMPORT_NAME}/action_tables.py" in names,
         "has_py_typed": f"{IMPORT_NAME}/py.typed" in names,
         "has_extension": len(extension) == 1,
+        "has_custom_core_extension": len(core_extension) == 1,
+        "has_custom_core_python": "vizdoom/__init__.py" in names,
+        "has_custom_core_binary": any(
+            name in {"vizdoom/vizdoom", "vizdoom/vizdoom.exe"}
+            for name in names
+        ),
+        "no_external_vizdoom_dependency": "Requires-Dist: vizdoom" not in metadata,
         "has_metadata": sum(name.endswith(".dist-info/METADATA") for name in names) == 1,
         "has_license": any(name.endswith(".dist-info/licenses/LICENSE") for name in names),
         "no_cache_files": not any(
@@ -317,7 +356,9 @@ def audit_wheel(wheel: Path, version: str) -> dict[str, object]:
     return {
         "wheel": str(wheel),
         "platform": wheel_platform(wheel),
+        "python": wheel_python_tag(wheel),
         "extension": extension,
+        "core_extension": core_extension,
         "checks": checks,
     }
 
@@ -422,12 +463,20 @@ def final_check(args: argparse.Namespace) -> None:
         raise SystemExit("final-check requires the complete wheel set")
     results = [audit_wheel(wheel, version) for wheel in wheels]
     assert_audits(results)
-    seen = {result["platform"] for result in results}
-    missing = sorted(set(RELEASE_PLATFORMS) - seen)
+    seen = {
+        (result["platform"], result["python"])
+        for result in results
+    }
+    expected = {
+        (platform, python)
+        for platform in RELEASE_PLATFORMS
+        for python in PYTHON_TAGS
+    }
+    missing = sorted(expected - seen)
     if missing:
-        raise SystemExit(f"release wheel set is missing: {', '.join(missing)}")
-    if len(wheels) != len(RELEASE_PLATFORMS):
-        raise SystemExit(f"expected {len(RELEASE_PLATFORMS)} wheels, found {len(wheels)}")
+        raise SystemExit(f"release wheel set is missing: {missing}")
+    if len(wheels) != len(expected):
+        raise SystemExit(f"expected {len(expected)} wheels, found {len(wheels)}")
     run([sys.executable, "-m", "twine", "check", *[str(wheel) for wheel in wheels]])
     print(
         json.dumps(

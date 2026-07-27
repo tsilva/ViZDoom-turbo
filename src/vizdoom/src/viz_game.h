@@ -147,6 +147,7 @@ struct VIZGameState{
     size_t SCREEN_PITCH;
     size_t SCREEN_SIZE;
     int SCREEN_FORMAT;
+    BYTE SCREEN_PALETTE[256 * 3];
 
     bool DEPTH_BUFFER;
     bool LABELS;
@@ -237,6 +238,7 @@ struct VIZGameState{
     char NOTIFICATIONS_TEXT[VIZ_MAX_NOTIFICATIONS_CHARS];
 };
 
+extern VIZGameState *vizGameStateSM;
 
 void VIZ_GameStateInit();
 

@@ -27,6 +27,9 @@
 #include "viz_depth.h"
 #include "viz_labels.h"
 #include "viz_main.h"
+#include "viz_game.h"
+
+#include <cstring>
 
 unsigned int vizScreenWidth, vizScreenHeight;
 size_t vizScreenPitch, vizScreenSize, vizScreenChannelSize;
@@ -234,6 +237,14 @@ void VIZ_CopyBuffer(BYTE *vizBuffer){
 
     if(buffer == NULL || palette == NULL) return;
 
+    if(vizGameStateSM != NULL) {
+        for(unsigned int i = 0; i < 256; ++i) {
+            vizGameStateSM->SCREEN_PALETTE[i * 3] = palette[i].r;
+            vizGameStateSM->SCREEN_PALETTE[i * 3 + 1] = palette[i].g;
+            vizGameStateSM->SCREEN_PALETTE[i * 3 + 2] = palette[i].b;
+        }
+    }
+
     const unsigned int screenSize = screen->GetWidth() * screen->GetHeight();
     const unsigned int bufferPitch = screen->GetPitch();
     const unsigned int screenWidth = screen->GetWidth();
@@ -245,9 +256,11 @@ void VIZ_CopyBuffer(BYTE *vizBuffer){
         VIZ_Error(VIZ_FUNC, "Buffers size mismatch.");
 
     if(*viz_screen_format == VIZ_SCREEN_DOOM_256_COLORS8){
-        for(unsigned int i = 0; i < screenSize; ++i){
-            unsigned int b = i + (i / screenWidth) * bufferPitchWidthDiff;
-            vizBuffer[i] = buffer[b];
+        for(unsigned int row = 0; row < vizScreenHeight; ++row){
+            std::memcpy(
+                vizBuffer + row * screenWidth,
+                buffer + row * bufferPitch,
+                screenWidth);
         }
     }
     else if(*viz_screen_format == VIZ_SCREEN_GRAY8){

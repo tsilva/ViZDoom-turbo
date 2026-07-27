@@ -324,6 +324,8 @@ namespace vizdoom {
         }
     }
 
+
+
     void DoomController::restartMap(std::string demoPath) {
         this->setMap(this->map, demoPath);
     }
@@ -927,6 +929,9 @@ namespace vizdoom {
     /*----------------------------------------------------------------------------------------------------------------*/
 
     uint8_t *const DoomController::getScreenBuffer() { return this->screenBuffer; }
+    uint8_t *const DoomController::getScreenPalette() {
+        return this->gameState->SCREEN_PALETTE;
+    }
 
     int16_t *const DoomController::getAudioBuffer() { return this->audioBuffer; }
 

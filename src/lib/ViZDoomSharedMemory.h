@@ -129,6 +129,7 @@ namespace vizdoom {
         size_t SCREEN_PITCH;
         size_t SCREEN_SIZE;
         int SCREEN_FORMAT;
+        uint8_t SCREEN_PALETTE[256 * 3];
 
         // BUFFERS
         bool DEPTH_BUFFER;

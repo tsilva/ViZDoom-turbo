@@ -1,11 +1,13 @@
 use numpy::{
     PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, PyReadonlyArray4, PyReadwriteArray1,
-    PyReadwriteArray4, PyReadwriteArray5, PyUntypedArrayMethods,
+    PyReadwriteArray3, PyReadwriteArray4, PyReadwriteArray5, PyUntypedArrayMethods,
 };
 use pyo3::exceptions::{PyIndexError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
+use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Copy)]
 enum ResizeAlgorithm {
@@ -27,16 +29,20 @@ impl ResizeAlgorithm {
     }
 }
 
-const MASKED_SAMPLE: usize = usize::MAX;
+const MASKED_SAMPLE: usize = u32::MAX as usize;
+const INDEXED_AREA_DIVISOR: u64 = 1_600;
+const INDEXED_AREA_WEIGHT_QUANTUM: u32 = 48;
+const INDEXED_AREA_CHANNEL_BITS: u32 = 20;
+const INDEXED_AREA_CHANNEL_MASK: u64 = (1 << INDEXED_AREA_CHANNEL_BITS) - 1;
 
 struct AreaSample {
-    offset: usize,
-    weight: u64,
+    offset: u32,
+    weight: u32,
 }
 
 struct AreaPixel {
-    sample_start: usize,
-    sample_end: usize,
+    sample_start: u32,
+    sample_end: u32,
 }
 
 struct ImagePlan {
@@ -107,17 +113,17 @@ impl ImagePlan {
                                     || raw_x >= raw_w - crop[3]);
                             area_samples.push(AreaSample {
                                 offset: if masked {
-                                    MASKED_SAMPLE
+                                    MASKED_SAMPLE as u32
                                 } else {
-                                    (raw_y * raw_w + raw_x) * 3
+                                    (raw_y * raw_w + raw_x) as u32
                                 },
-                                weight,
+                                weight: weight as u32,
                             });
                         }
                     }
                     area_pixels.push(AreaPixel {
-                        sample_start,
-                        sample_end: area_samples.len(),
+                        sample_start: sample_start as u32,
+                        sample_end: area_samples.len() as u32,
                     });
                 }
             }
@@ -301,11 +307,18 @@ impl ImagePlan {
     {
         let pixel = &self.area_pixels[out_y * self.out_w + out_x];
         let mut sums = [0_u64; 3];
-        for sample in &self.area_samples[pixel.sample_start..pixel.sample_end] {
-            let rgb = rgb_at(sample.offset);
-            sums[0] += u64::from(rgb[0]) * sample.weight;
-            sums[1] += u64::from(rgb[1]) * sample.weight;
-            sums[2] += u64::from(rgb[2]) * sample.weight;
+        for sample in
+            &self.area_samples[pixel.sample_start as usize..pixel.sample_end as usize]
+        {
+            let rgb = rgb_at(if sample.offset == MASKED_SAMPLE as u32 {
+                MASKED_SAMPLE
+            } else {
+                sample.offset as usize * 3
+            });
+            let weight = u64::from(sample.weight);
+            sums[0] += u64::from(rgb[0]) * weight;
+            sums[1] += u64::from(rgb[1]) * weight;
+            sums[2] += u64::from(rgb[2]) * weight;
         }
         let integer_result = [
             ((sums[0] + self.area_divisor / 2) / self.area_divisor) as u8,
@@ -347,6 +360,95 @@ impl ImagePlan {
                 for channel in 0..3 {
                     sums[channel] += rgb[channel] as f64 * weight;
                 }
+                weight_sum += weight;
+            }
+        }
+        [
+            (sums[0] / weight_sum).round() as u8,
+            (sums[1] / weight_sum).round() as u8,
+            (sums[2] / weight_sum).round() as u8,
+        ]
+    }
+
+    #[inline]
+    fn area_indexed_rgb(
+        &self,
+        current: &[u8],
+        palette: &[u8],
+        palette_rgb: &[u64; 256],
+        out_y: usize,
+        out_x: usize,
+    ) -> [u8; 3] {
+        let pixel = &self.area_pixels[out_y * self.out_w + out_x];
+        let samples =
+            &self.area_samples[pixel.sample_start as usize..pixel.sample_end as usize];
+        let mut packed_rgb = [0_u64; 4];
+        let mut chunks = samples.chunks_exact(4);
+        for chunk in &mut chunks {
+            for lane in 0..4 {
+                let sample = unsafe { chunk.get_unchecked(lane) };
+                let palette_index =
+                    usize::from(unsafe { *current.get_unchecked(sample.offset as usize) });
+                let weight = u64::from(sample.weight / INDEXED_AREA_WEIGHT_QUANTUM);
+                packed_rgb[lane] +=
+                    unsafe { *palette_rgb.get_unchecked(palette_index) } * weight;
+            }
+        }
+        for sample in chunks.remainder() {
+            let palette_index =
+                usize::from(unsafe { *current.get_unchecked(sample.offset as usize) });
+            let weight = u64::from(sample.weight / INDEXED_AREA_WEIGHT_QUANTUM);
+            packed_rgb[0] +=
+                unsafe { *palette_rgb.get_unchecked(palette_index) } * weight;
+        }
+        let packed_rgb = packed_rgb.into_iter().sum::<u64>();
+        let sums = [
+            packed_rgb & INDEXED_AREA_CHANNEL_MASK,
+            (packed_rgb >> INDEXED_AREA_CHANNEL_BITS) & INDEXED_AREA_CHANNEL_MASK,
+            packed_rgb >> (INDEXED_AREA_CHANNEL_BITS * 2),
+        ];
+        let integer_result = [
+            ((sums[0] + INDEXED_AREA_DIVISOR / 2) / INDEXED_AREA_DIVISOR) as u8,
+            ((sums[1] + INDEXED_AREA_DIVISOR / 2) / INDEXED_AREA_DIVISOR) as u8,
+            ((sums[2] + INDEXED_AREA_DIVISOR / 2) / INDEXED_AREA_DIVISOR) as u8,
+        ];
+        if sums
+            .iter()
+            .any(|sum| (sum % INDEXED_AREA_DIVISOR) * 2 == INDEXED_AREA_DIVISOR)
+        {
+            self.area_indexed_rgb_float(current, palette, out_y, out_x)
+        } else {
+            integer_result
+        }
+    }
+
+    #[cold]
+    fn area_indexed_rgb_float(
+        &self,
+        current: &[u8],
+        palette: &[u8],
+        out_y: usize,
+        out_x: usize,
+    ) -> [u8; 3] {
+        let y_start = out_y as f64 * self.source_h as f64 / self.out_h as f64;
+        let y_end = (out_y + 1) as f64 * self.source_h as f64 / self.out_h as f64;
+        let x_start = out_x as f64 * self.source_w as f64 / self.out_w as f64;
+        let x_end = (out_x + 1) as f64 * self.source_w as f64 / self.out_w as f64;
+        let mut sums = [0.0_f64; 3];
+        let mut weight_sum = 0.0_f64;
+        for source_y in y_start.floor() as usize..(y_end.ceil() as usize).min(self.source_h) {
+            let y_weight =
+                (y_end.min(source_y as f64 + 1.0) - y_start.max(source_y as f64)).max(0.0);
+            for source_x in x_start.floor() as usize..(x_end.ceil() as usize).min(self.source_w) {
+                let x_weight =
+                    (x_end.min(source_x as f64 + 1.0) - x_start.max(source_x as f64)).max(0.0);
+                let weight = y_weight * x_weight;
+                let raw_y = source_y + self.crop[0];
+                let raw_x = source_x + self.crop[2];
+                let palette_offset = usize::from(current[raw_y * self.raw_w + raw_x]) * 3;
+                sums[0] += palette[palette_offset] as f64 * weight;
+                sums[1] += palette[palette_offset + 1] as f64 * weight;
+                sums[2] += palette[palette_offset + 2] as f64 * weight;
                 weight_sum += weight;
             }
         }
@@ -419,6 +521,33 @@ impl ImagePlan {
             _ => unreachable!("output channel count is validated at construction"),
         }
     }
+
+    fn write_indexed_frame(
+        &self,
+        current: &[u8],
+        palette: &[u8],
+        output: &mut [u8],
+    ) {
+        let mut palette_rgb = [0_u64; 256];
+        for palette_index in 0..256 {
+            let offset = palette_index * 3;
+            palette_rgb[palette_index] = u64::from(palette[offset])
+                | (u64::from(palette[offset + 1]) << INDEXED_AREA_CHANNEL_BITS)
+                | (u64::from(palette[offset + 2]) << (INDEXED_AREA_CHANNEL_BITS * 2));
+        }
+        for out_y in 0..self.out_h {
+            for out_x in 0..self.out_w {
+                output[out_y * self.out_w + out_x] = Self::grayscale(self.area_indexed_rgb(
+                    current,
+                    palette,
+                    &palette_rgb,
+                    out_y,
+                    out_x,
+                ));
+            }
+        }
+    }
+
 }
 
 #[derive(Clone, Copy)]
@@ -766,6 +895,494 @@ impl ImageProcessor {
                         self.write_observation(stack_lane, new_head, output_lane);
                     });
             });
+        });
+        Ok(())
+    }
+
+    fn step_lane_into(
+        &self,
+        py: Python<'_>,
+        current: PyReadonlyArray3<'_, u8>,
+        mut stack: PyReadwriteArray4<'_, u8>,
+        mut head: PyReadwriteArray1<'_, i64>,
+        mut output: PyReadwriteArray3<'_, u8>,
+    ) -> PyResult<()> {
+        let expected_current = [self.plan.raw_h, self.plan.raw_w, 3];
+        let expected_stack = [
+            self.frame_stack,
+            self.plan.out_h,
+            self.plan.out_w,
+            self.plan.out_c,
+        ];
+        let expected_output = match self.layout {
+            ObservationLayout::Hwc => [
+                self.plan.out_h,
+                self.plan.out_w,
+                self.plan.out_c * self.frame_stack,
+            ],
+            ObservationLayout::Chw => [
+                self.plan.out_c * self.frame_stack,
+                self.plan.out_h,
+                self.plan.out_w,
+            ],
+        };
+        if current.shape() != expected_current {
+            return Err(PyValueError::new_err(format!(
+                "current must have shape {expected_current:?}"
+            )));
+        }
+        if stack.shape() != expected_stack {
+            return Err(PyValueError::new_err(format!(
+                "stack must have shape {expected_stack:?}"
+            )));
+        }
+        if head.shape() != [1] {
+            return Err(PyValueError::new_err("head must have shape (1,)"));
+        }
+        if output.shape() != expected_output {
+            return Err(PyValueError::new_err(format!(
+                "output must have shape {expected_output:?}"
+            )));
+        }
+
+        let current_data = current.as_slice()?;
+        let stack_data = stack.as_slice_mut()?;
+        let head_data = head.as_slice_mut()?;
+        let output_data = output.as_slice_mut()?;
+        let image_frame_size = self.plan.out_h * self.plan.out_w * self.plan.out_c;
+        py.detach(|| {
+            let new_head = (head_data[0] as usize + 1) % self.frame_stack;
+            let destination =
+                &mut stack_data[new_head * image_frame_size..(new_head + 1) * image_frame_size];
+            self.plan.write_frame(current_data, None, destination);
+            head_data[0] = new_head as i64;
+            self.write_observation(stack_data, new_head, output_data);
+        });
+        Ok(())
+    }
+
+    fn step_indexed_lane_into(
+        &self,
+        py: Python<'_>,
+        current: PyReadonlyArray2<'_, u8>,
+        palette: PyReadonlyArray2<'_, u8>,
+        mut stack: PyReadwriteArray4<'_, u8>,
+        mut head: PyReadwriteArray1<'_, i64>,
+        mut output: PyReadwriteArray3<'_, u8>,
+    ) -> PyResult<()> {
+        if self.plan.mask_crop
+            || !matches!(self.plan.algorithm, ResizeAlgorithm::Area)
+            || self.plan.out_c != 1
+            || self.plan.raw_w != 320
+            || self.plan.raw_h != 240
+            || self.plan.out_w != 84
+            || self.plan.out_h != 84
+            || self.plan.crop != [0, 0, 0, 0]
+        {
+            return Err(PyValueError::new_err(
+                "indexed preprocessing requires the exact 320x240 to 84x84 unmasked area-resize grayscale profile",
+            ));
+        }
+        if current.shape() != [self.plan.raw_h, self.plan.raw_w] {
+            return Err(PyValueError::new_err("current has an invalid indexed shape"));
+        }
+        if palette.shape() != [256, 3] {
+            return Err(PyValueError::new_err("palette must have shape (256, 3)"));
+        }
+        let expected_stack = [
+            self.frame_stack,
+            self.plan.out_h,
+            self.plan.out_w,
+            self.plan.out_c,
+        ];
+        let expected_output = match self.layout {
+            ObservationLayout::Hwc => [
+                self.plan.out_h,
+                self.plan.out_w,
+                self.plan.out_c * self.frame_stack,
+            ],
+            ObservationLayout::Chw => [
+                self.plan.out_c * self.frame_stack,
+                self.plan.out_h,
+                self.plan.out_w,
+            ],
+        };
+        if stack.shape() != expected_stack || head.shape() != [1] {
+            return Err(PyValueError::new_err("stack or head has an invalid shape"));
+        }
+        if output.shape() != expected_output {
+            return Err(PyValueError::new_err("output has an invalid shape"));
+        }
+
+        let current_data = current.as_slice()?;
+        let palette_data = palette.as_slice()?;
+        let stack_data = stack.as_slice_mut()?;
+        let head_data = head.as_slice_mut()?;
+        let output_data = output.as_slice_mut()?;
+        let image_frame_size = self.plan.out_h * self.plan.out_w;
+        py.detach(|| {
+            let new_head = (head_data[0] as usize + 1) % self.frame_stack;
+            let destination =
+                &mut stack_data[new_head * image_frame_size..(new_head + 1) * image_frame_size];
+            self.plan
+                .write_indexed_frame(current_data, palette_data, destination);
+            head_data[0] = new_head as i64;
+            self.write_observation(stack_data, new_head, output_data);
+        });
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn step_native_batch_into(
+        &self,
+        py: Python<'_>,
+        context: usize,
+        step_address: usize,
+        frame_address: usize,
+        palette_address: usize,
+        mut stack: PyReadwriteArray5<'_, u8>,
+        mut heads: PyReadwriteArray1<'_, i64>,
+        mut output: PyReadwriteArray4<'_, u8>,
+    ) -> PyResult<()> {
+        if self.plan.mask_crop
+            || !matches!(self.plan.algorithm, ResizeAlgorithm::Area)
+            || self.plan.out_c != 1
+            || self.plan.raw_w != 320
+            || self.plan.raw_h != 240
+            || self.plan.out_w != 84
+            || self.plan.out_h != 84
+            || self.plan.crop != [0, 0, 0, 0]
+        {
+            return Err(PyValueError::new_err(
+                "native batch preprocessing requires the exact 320x240 to 84x84 unmasked area-resize grayscale profile",
+            ));
+        }
+        let expected_stack = [
+            self.num_envs,
+            self.frame_stack,
+            self.plan.out_h,
+            self.plan.out_w,
+            self.plan.out_c,
+        ];
+        let expected_output = match self.layout {
+            ObservationLayout::Hwc => [
+                self.num_envs,
+                self.plan.out_h,
+                self.plan.out_w,
+                self.plan.out_c * self.frame_stack,
+            ],
+            ObservationLayout::Chw => [
+                self.num_envs,
+                self.plan.out_c * self.frame_stack,
+                self.plan.out_h,
+                self.plan.out_w,
+            ],
+        };
+        if stack.shape() != expected_stack || heads.shape() != [self.num_envs] {
+            return Err(PyValueError::new_err("stack or heads has an invalid shape"));
+        }
+        if output.shape() != expected_output {
+            return Err(PyValueError::new_err("output has an invalid shape"));
+        }
+
+        type StepLane = unsafe extern "C" fn(*mut c_void, usize) -> u32;
+        type BufferLane = unsafe extern "C" fn(*mut c_void, usize) -> *const u8;
+        let step_lane: StepLane = unsafe { std::mem::transmute(step_address) };
+        let frame_lane: BufferLane = unsafe { std::mem::transmute(frame_address) };
+        let palette_lane: BufferLane = unsafe { std::mem::transmute(palette_address) };
+        let stack_data = stack.as_slice_mut()?;
+        let heads_data = heads.as_slice_mut()?;
+        let output_data = output.as_slice_mut()?;
+        let image_frame_size = self.plan.out_h * self.plan.out_w;
+        let stack_lane_size = self.frame_stack * image_frame_size;
+        let output_lane_size = self.frame_stack * image_frame_size;
+        let failed = AtomicBool::new(false);
+
+        py.detach(|| {
+            self.pool.install(|| {
+                stack_data
+                    .par_chunks_mut(stack_lane_size)
+                    .zip(heads_data.par_iter_mut())
+                    .zip(output_data.par_chunks_mut(output_lane_size))
+                    .enumerate()
+                    .for_each(|(lane, ((stack_lane, head), output_lane))| {
+                        let status =
+                            unsafe { step_lane(context as *mut c_void, lane) };
+                        if status & 4 != 0 {
+                            failed.store(true, Ordering::Relaxed);
+                            return;
+                        }
+                        let old_head = *head as usize;
+                        let new_head = (old_head + 1) % self.frame_stack;
+                        let destination = new_head * image_frame_size;
+                        if status & 3 != 0 {
+                            let source = old_head * image_frame_size;
+                            if source < destination {
+                                let (before, after) = stack_lane.split_at_mut(destination);
+                                after[..image_frame_size].copy_from_slice(
+                                    &before[source..source + image_frame_size],
+                                );
+                            } else if destination < source {
+                                let (before, after) = stack_lane.split_at_mut(source);
+                                before[destination..destination + image_frame_size]
+                                    .copy_from_slice(&after[..image_frame_size]);
+                            }
+                        } else {
+                            let frame = unsafe {
+                                std::slice::from_raw_parts(
+                                    frame_lane(context as *mut c_void, lane),
+                                    self.plan.raw_h * self.plan.raw_w,
+                                )
+                            };
+                            let palette = unsafe {
+                                std::slice::from_raw_parts(
+                                    palette_lane(context as *mut c_void, lane),
+                                    256 * 3,
+                                )
+                            };
+                            self.plan.write_indexed_frame(
+                                frame,
+                                palette,
+                                &mut stack_lane
+                                    [destination..destination + image_frame_size],
+                            );
+                        }
+                        *head = new_head as i64;
+                        self.write_observation(stack_lane, new_head, output_lane);
+                    });
+            });
+        });
+        if failed.load(Ordering::Relaxed) {
+            return Err(PyRuntimeError::new_err("native Doom lane step failed"));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reset_native_batch_into(
+        &self,
+        py: Python<'_>,
+        context: usize,
+        frame_address: usize,
+        palette_address: usize,
+        mask: PyReadonlyArray1<'_, bool>,
+        mut stack: PyReadwriteArray5<'_, u8>,
+        mut heads: PyReadwriteArray1<'_, i64>,
+        mut output: PyReadwriteArray4<'_, u8>,
+    ) -> PyResult<()> {
+        let expected_stack = [
+            self.num_envs,
+            self.frame_stack,
+            self.plan.out_h,
+            self.plan.out_w,
+            self.plan.out_c,
+        ];
+        let expected_output = match self.layout {
+            ObservationLayout::Hwc => [
+                self.num_envs,
+                self.plan.out_h,
+                self.plan.out_w,
+                self.plan.out_c * self.frame_stack,
+            ],
+            ObservationLayout::Chw => [
+                self.num_envs,
+                self.plan.out_c * self.frame_stack,
+                self.plan.out_h,
+                self.plan.out_w,
+            ],
+        };
+        if mask.shape() != [self.num_envs]
+            || stack.shape() != expected_stack
+            || heads.shape() != [self.num_envs]
+            || output.shape() != expected_output
+        {
+            return Err(PyValueError::new_err(
+                "native reset arrays have invalid shapes",
+            ));
+        }
+
+        type BufferLane = unsafe extern "C" fn(*mut c_void, usize) -> *const u8;
+        let frame_lane: BufferLane = unsafe { std::mem::transmute(frame_address) };
+        let palette_lane: BufferLane = unsafe { std::mem::transmute(palette_address) };
+        let mask_data = mask.as_slice()?;
+        let stack_data = stack.as_slice_mut()?;
+        let heads_data = heads.as_slice_mut()?;
+        let output_data = output.as_slice_mut()?;
+        let image_frame_size = self.plan.out_h * self.plan.out_w;
+        let stack_lane_size = self.frame_stack * image_frame_size;
+        let output_lane_size = self.frame_stack * image_frame_size;
+
+        py.detach(|| {
+            self.pool.install(|| {
+                stack_data
+                    .par_chunks_mut(stack_lane_size)
+                    .zip(heads_data.par_iter_mut())
+                    .zip(output_data.par_chunks_mut(output_lane_size))
+                    .zip(mask_data.par_iter())
+                    .enumerate()
+                    .for_each(
+                        |(lane, (((stack_lane, head), output_lane), selected))| {
+                            if !*selected {
+                                return;
+                            }
+                            let frame = unsafe {
+                                std::slice::from_raw_parts(
+                                    frame_lane(context as *mut c_void, lane),
+                                    self.plan.raw_h * self.plan.raw_w,
+                                )
+                            };
+                            let palette = unsafe {
+                                std::slice::from_raw_parts(
+                                    palette_lane(context as *mut c_void, lane),
+                                    256 * 3,
+                                )
+                            };
+                            self.plan.write_indexed_frame(
+                                frame,
+                                palette,
+                                &mut stack_lane[..image_frame_size],
+                            );
+                            for slot in 1..self.frame_stack {
+                                stack_lane.copy_within(
+                                    ..image_frame_size,
+                                    slot * image_frame_size,
+                                );
+                            }
+                            *head = 0;
+                            self.write_observation(stack_lane, 0, output_lane);
+                        },
+                    );
+            });
+        });
+        Ok(())
+    }
+
+    fn reset_indexed_lane_into(
+        &self,
+        py: Python<'_>,
+        current: PyReadonlyArray2<'_, u8>,
+        palette: PyReadonlyArray2<'_, u8>,
+        mut stack: PyReadwriteArray4<'_, u8>,
+        mut head: PyReadwriteArray1<'_, i64>,
+        mut output: PyReadwriteArray3<'_, u8>,
+    ) -> PyResult<()> {
+        if self.plan.mask_crop
+            || !matches!(self.plan.algorithm, ResizeAlgorithm::Area)
+            || self.plan.out_c != 1
+            || self.plan.raw_w != 320
+            || self.plan.raw_h != 240
+            || self.plan.out_w != 84
+            || self.plan.out_h != 84
+            || self.plan.crop != [0, 0, 0, 0]
+        {
+            return Err(PyValueError::new_err(
+                "indexed preprocessing requires the exact 320x240 to 84x84 unmasked area-resize grayscale profile",
+            ));
+        }
+        if current.shape() != [self.plan.raw_h, self.plan.raw_w] {
+            return Err(PyValueError::new_err("current has an invalid indexed shape"));
+        }
+        if palette.shape() != [256, 3] {
+            return Err(PyValueError::new_err("palette must have shape (256, 3)"));
+        }
+        let expected_stack = [
+            self.frame_stack,
+            self.plan.out_h,
+            self.plan.out_w,
+            self.plan.out_c,
+        ];
+        let expected_output = match self.layout {
+            ObservationLayout::Hwc => [
+                self.plan.out_h,
+                self.plan.out_w,
+                self.plan.out_c * self.frame_stack,
+            ],
+            ObservationLayout::Chw => [
+                self.plan.out_c * self.frame_stack,
+                self.plan.out_h,
+                self.plan.out_w,
+            ],
+        };
+        if stack.shape() != expected_stack || head.shape() != [1] {
+            return Err(PyValueError::new_err("stack or head has an invalid shape"));
+        }
+        if output.shape() != expected_output {
+            return Err(PyValueError::new_err("output has an invalid shape"));
+        }
+
+        let current_data = current.as_slice()?;
+        let palette_data = palette.as_slice()?;
+        let stack_data = stack.as_slice_mut()?;
+        let head_data = head.as_slice_mut()?;
+        let output_data = output.as_slice_mut()?;
+        let image_frame_size = self.plan.out_h * self.plan.out_w;
+        py.detach(|| {
+            self.plan.write_indexed_frame(
+                current_data,
+                palette_data,
+                &mut stack_data[..image_frame_size],
+            );
+            for slot in 1..self.frame_stack {
+                stack_data.copy_within(..image_frame_size, slot * image_frame_size);
+            }
+            head_data[0] = 0;
+            self.write_observation(stack_data, 0, output_data);
+        });
+        Ok(())
+    }
+
+    fn repeat_last_lane_into(
+        &self,
+        py: Python<'_>,
+        mut stack: PyReadwriteArray4<'_, u8>,
+        mut head: PyReadwriteArray1<'_, i64>,
+        mut output: PyReadwriteArray3<'_, u8>,
+    ) -> PyResult<()> {
+        let expected_stack = [
+            self.frame_stack,
+            self.plan.out_h,
+            self.plan.out_w,
+            self.plan.out_c,
+        ];
+        let expected_output = match self.layout {
+            ObservationLayout::Hwc => [
+                self.plan.out_h,
+                self.plan.out_w,
+                self.plan.out_c * self.frame_stack,
+            ],
+            ObservationLayout::Chw => [
+                self.plan.out_c * self.frame_stack,
+                self.plan.out_h,
+                self.plan.out_w,
+            ],
+        };
+        if stack.shape() != expected_stack || head.shape() != [1] {
+            return Err(PyValueError::new_err("stack or head has an invalid shape"));
+        }
+        if output.shape() != expected_output {
+            return Err(PyValueError::new_err("output has an invalid shape"));
+        }
+
+        let stack_data = stack.as_slice_mut()?;
+        let head_data = head.as_slice_mut()?;
+        let output_data = output.as_slice_mut()?;
+        let image_frame_size = self.plan.out_h * self.plan.out_w * self.plan.out_c;
+        py.detach(|| {
+            let old_head = head_data[0] as usize;
+            let new_head = (old_head + 1) % self.frame_stack;
+            let source = old_head * image_frame_size;
+            let destination = new_head * image_frame_size;
+            if source < destination {
+                let (before, after) = stack_data.split_at_mut(destination);
+                after[..image_frame_size]
+                    .copy_from_slice(&before[source..source + image_frame_size]);
+            } else if destination < source {
+                let (before, after) = stack_data.split_at_mut(source);
+                before[destination..destination + image_frame_size]
+                    .copy_from_slice(&after[..image_frame_size]);
+            }
+            head_data[0] = new_head as i64;
+            self.write_observation(stack_data, new_head, output_data);
         });
         Ok(())
     }

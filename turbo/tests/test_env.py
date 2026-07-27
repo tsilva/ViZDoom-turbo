@@ -6,6 +6,7 @@ from pathlib import Path
 import gymnasium as gym
 import numpy as np
 import pytest
+import vizdoom as vzd
 from gymnasium.vector import AutoresetMode
 from vizdoom_turbo import VizDoomTurboVecEnv, VizdoomTurboVecEnv, scenario_buttons
 
@@ -52,6 +53,34 @@ def make_env(**overrides) -> VizdoomTurboVecEnv:
     }
     options.update(overrides)
     return VizdoomTurboVecEnv(**options)
+
+
+def make_exact_env(**overrides) -> VizdoomTurboVecEnv:
+    options = {
+        "game": "VizdoomBasic-v1",
+        "num_envs": 4,
+        "num_threads": 4,
+        "use_restricted_actions": "discrete",
+        "obs_copy": "safe_view",
+        "obs_resize": (84, 84),
+        "obs_grayscale": True,
+        "obs_layout": "chw",
+        "frame_stack": 4,
+        "frame_skip": 4,
+        "maxpool_last_two": False,
+        "sticky_action_prob": 0,
+        "obs_resize_algorithm": "area",
+        "info_filter": {"mode": "all", "keys": ["killcount"]},
+        "game_variables": ["KILLCOUNT"],
+    }
+    options.update(overrides)
+    return VizdoomTurboVecEnv(**options)
+
+
+def assert_info_equal(actual: dict[str, np.ndarray], expected: dict[str, np.ndarray]) -> None:
+    assert actual.keys() == expected.keys()
+    for key in actual:
+        np.testing.assert_array_equal(actual[key], expected[key], err_msg=key)
 
 
 def test_public_signature_matches_turbo_constructor_contract() -> None:
@@ -296,3 +325,142 @@ def test_custom_action_table_is_exact_and_hashed() -> None:
         )
     finally:
         env.close()
+
+
+def test_exact_profile_detects_custom_native_core() -> None:
+    env = make_exact_env(num_envs=1, num_threads=1)
+    try:
+        observations, _infos = env.reset(seed=31)
+        assert hasattr(vzd, "_TurboBatchStepper")
+        assert env._native_stepper is not None
+        assert env._use_indexed_native is True
+        assert env._games[0].get_screen_format() == vzd.ScreenFormat.DOOM_256_COLORS8
+        assert observations.shape == (1, 4, 84, 84)
+    finally:
+        env.close()
+
+
+def test_native_pipeline_disable_switch_uses_generic_rgb_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VIZDOOM_TURBO_DISABLE_NATIVE_PIPELINE", "1")
+    env = make_exact_env(num_envs=1, num_threads=1)
+    try:
+        env.reset(seed=32)
+        assert env._native_stepper is None
+        assert env._use_indexed_native is False
+        assert env._games[0].get_screen_format() == vzd.ScreenFormat.RGB24
+        env.step(np.zeros(1, dtype=np.int64))
+    finally:
+        env.close()
+
+
+def test_missing_native_core_uses_generic_rgb_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(vzd, "_TurboBatchStepper")
+    env = make_exact_env(num_envs=1, num_threads=1)
+    try:
+        env.reset(seed=32)
+        assert env._native_stepper is None
+        assert env._use_indexed_native is False
+        assert env._games[0].get_screen_format() == vzd.ScreenFormat.RGB24
+        env.step(np.zeros(1, dtype=np.int64))
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"maxpool_last_two": True},
+        {"obs_resize_algorithm": "bilinear"},
+        {"obs_grayscale": False},
+        {"obs_resize": (96, 96)},
+    ],
+)
+def test_non_fast_path_profiles_use_generic_implementation(
+    overrides: dict[str, object],
+) -> None:
+    env = make_exact_env(num_envs=1, num_threads=1, **overrides)
+    try:
+        observations, _infos = env.reset(seed=33)
+        assert env._native_stepper is None
+        assert env._use_indexed_native is False
+        assert env._games[0].get_screen_format() == vzd.ScreenFormat.RGB24
+        transition = env.step(np.zeros(1, dtype=np.int64))
+        assert transition[0].shape == observations.shape
+    finally:
+        env.close()
+
+
+def test_native_pipeline_matches_fallback_through_terminals_and_masked_resets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = make_exact_env(
+        vizdoom_config={"episode_timeout": 300, "episode_start_time": 1},
+    )
+    monkeypatch.setenv("VIZDOOM_TURBO_DISABLE_NATIVE_PIPELINE", "1")
+    fallback = make_exact_env(
+        vizdoom_config={"episode_timeout": 300, "episode_start_time": 1},
+    )
+    rng = np.random.default_rng(90210)
+    resets = 0
+    terminations = 0
+    truncations = 0
+    try:
+        native_observations, native_infos = native.reset(seed=71)
+        fallback_observations, fallback_infos = fallback.reset(seed=71)
+        np.testing.assert_array_equal(native_observations, fallback_observations)
+        assert_info_equal(native_infos, fallback_infos)
+
+        for step in range(160):
+            actions = rng.integers(
+                native.single_action_space.n,
+                size=native.num_envs,
+                dtype=np.int64,
+            )
+            native_transition = native.step(actions)
+            fallback_transition = fallback.step(actions)
+            for native_value, fallback_value in zip(
+                native_transition[:4],
+                fallback_transition[:4],
+                strict=True,
+            ):
+                np.testing.assert_array_equal(native_value, fallback_value)
+            assert_info_equal(native_transition[4], fallback_transition[4])
+
+            done = native_transition[2] | native_transition[3]
+            terminations += int(native_transition[2].sum())
+            truncations += int(native_transition[3].sum())
+            if np.any(done):
+                state_indices = np.zeros(native.num_envs, dtype=np.int32)
+                seeds = [
+                    10_000 + step * native.num_envs + lane if masked else None
+                    for lane, masked in enumerate(done)
+                ]
+                options = {
+                    "reset_mask": done,
+                    "state_indices": state_indices,
+                }
+                native_observations, native_infos = native.reset(
+                    seed=seeds,
+                    options=options,
+                )
+                fallback_observations, fallback_infos = fallback.reset(
+                    seed=seeds,
+                    options=options,
+                )
+                np.testing.assert_array_equal(
+                    native_observations,
+                    fallback_observations,
+                )
+                assert_info_equal(native_infos, fallback_infos)
+                resets += 1
+
+        assert terminations > 0
+        assert truncations > 0
+        assert resets >= 2
+    finally:
+        native.close()
+        fallback.close()

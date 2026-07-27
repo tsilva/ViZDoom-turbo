@@ -1,6 +1,14 @@
 [build-system]
-requires = ["maturin>=1.8,<2"]
-build-backend = "maturin"
+requires = [
+  "cmake>=3.12.0",
+  "maturin>=1.8,<2",
+  "pip",
+  "pybind11-stubgen",
+  "setuptools>=65",
+  "wheel",
+]
+build-backend = "build_backend"
+backend-path = ["."]
 
 [project]
 name = "vizdoom-turbo"
@@ -37,7 +45,6 @@ classifiers = [
 dependencies = [
   "gymnasium>=1.2,<2",
   "numpy>=1.26,<3",
-  "vizdoom==1.3.0",
 ]
 
 [project.urls]
@@ -64,6 +71,7 @@ release = [
 [tool.maturin]
 module-name = "vizdoom_turbo._vizdoom_turbo"
 python-source = "python"
+python-packages = ["vizdoom_turbo", "vizdoom"]
 features = ["pyo3/extension-module"]
 exclude = [
   "**/__pycache__/**",
@@ -71,6 +79,9 @@ exclude = [
   "**/*.pyo",
   "dist/**",
 ]
+
+[tool.vizdoom-turbo]
+upstream-vizdoom-version = "1.3.0"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

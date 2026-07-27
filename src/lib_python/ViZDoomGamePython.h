@@ -38,6 +38,8 @@ namespace vizdoom {
 
     namespace pyb = pybind11;
 
+    class TurboBatchStepper;
+
     class ReleaseGIL {
     public:
         inline ReleaseGIL(){
@@ -128,6 +130,8 @@ namespace vizdoom {
         void respawnPlayer();
 
     private:
+        friend class TurboBatchStepper;
+
         GameStatePython* pyState;
 
         std::vector<pyb::ssize_t> colorShape;
@@ -136,6 +140,25 @@ namespace vizdoom {
         std::vector<pyb::ssize_t> variablesShape;
 
         void updateBuffersShapes();
+        void turboStepInto(
+            const double *action,
+            size_t actionSize,
+            unsigned int tics,
+            uint8_t *frame,
+            size_t frameSize,
+            uint8_t *palette,
+            size_t paletteSize,
+            float &reward,
+            bool &terminated,
+            bool &truncated,
+            double *gameVariables,
+            size_t gameVariablesSize,
+            bool treatTimeoutAsTruncation);
+        void turboReadIndexedInto(
+            uint8_t *frame,
+            size_t frameSize,
+            uint8_t *palette,
+            size_t paletteSize);
 
         template<class T> static std::vector<T> pyListToVector(pyb::list const &pyList);
         template<class T> static std::vector<T> pyArrayToVector(pyb::array_t<T> const &pyArray);

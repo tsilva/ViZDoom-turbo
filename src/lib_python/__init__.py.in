@@ -12,6 +12,7 @@ if _COMPILED_PYTHON_VERSION != _this_python_version:
 
 from .vizdoom import __version__ as __version__
 from .vizdoom import *
+from .vizdoom import _TurboBatchStepper as _TurboBatchStepper
 
 
 # Path helpers
