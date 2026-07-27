@@ -4,6 +4,10 @@
 
 - Nothing yet.
 
+## 0.1.3 - 2026-07-27
+
+- Optimize native vector preprocessing throughput.
+
 ## 0.1.2 - 2026-07-26
 
 - Move `vizdoom-turbo` into the `turbo` branch of the ViZDoom fork.
