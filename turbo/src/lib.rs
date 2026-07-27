@@ -382,12 +382,12 @@ impl ImagePlan {
         let mut packed_rgb = [0_u64; 4];
         let mut chunks = samples.chunks_exact(4);
         for chunk in &mut chunks {
-            for lane in 0..4 {
+            for (lane, packed) in packed_rgb.iter_mut().enumerate() {
                 let sample = unsafe { chunk.get_unchecked(lane) };
                 let palette_index =
                     usize::from(unsafe { *current.get_unchecked(sample.offset as usize) });
                 let weight = u64::from(sample.weight / INDEXED_AREA_WEIGHT_QUANTUM);
-                packed_rgb[lane] += unsafe { *palette_rgb.get_unchecked(palette_index) } * weight;
+                *packed += unsafe { *palette_rgb.get_unchecked(palette_index) } * weight;
             }
         }
         for sample in chunks.remainder() {
@@ -519,9 +519,9 @@ impl ImagePlan {
 
     fn write_indexed_frame(&self, current: &[u8], palette: &[u8], output: &mut [u8]) {
         let mut palette_rgb = [0_u64; 256];
-        for palette_index in 0..256 {
+        for (palette_index, packed) in palette_rgb.iter_mut().enumerate() {
             let offset = palette_index * 3;
-            palette_rgb[palette_index] = u64::from(palette[offset])
+            *packed = u64::from(palette[offset])
                 | (u64::from(palette[offset + 1]) << INDEXED_AREA_CHANNEL_BITS)
                 | (u64::from(palette[offset + 2]) << (INDEXED_AREA_CHANNEL_BITS * 2));
         }
