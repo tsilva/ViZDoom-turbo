@@ -4,6 +4,10 @@
 
 - Nothing yet.
 
+## 1.3.0.post6 - 2026-07-27
+
+- Load build backend tests with package path.
+
 ## 1.3.0.post5 - 2026-07-27
 
 - Checkout release build submodules.
