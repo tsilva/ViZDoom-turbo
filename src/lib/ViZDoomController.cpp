@@ -216,7 +216,7 @@ namespace vizdoom {
         try{
             if (this->doomRunning) {
                 // Try to stop demo recording
-                if (this->gameState->DEMO_RECORDING){
+                if (this->gameState && this->gameState->DEMO_RECORDING){
                     this->sendCommand("stop");
                     this->MQDoom->send(MSG_CODE_TIC);
                     this->waitForDoomWork();
