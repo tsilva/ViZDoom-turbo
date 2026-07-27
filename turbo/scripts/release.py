@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
+import tomllib
 from datetime import date
 from pathlib import Path
 
@@ -23,6 +25,12 @@ RELEASE_FILES = (
     PACKAGE_ROOT / "Cargo.lock",
     PACKAGE_ROOT / "uv.lock",
     CHANGES,
+)
+VERSION_RE = re.compile(
+    r"^(?P<base>[0-9]+\.[0-9]+\.[0-9]+)(?:\.post(?P<post>[0-9]+))?$"
+)
+UPSTREAM_DEPENDENCY_RE = re.compile(
+    r"^vizdoom==(?P<version>[0-9]+\.[0-9]+\.[0-9]+)$"
 )
 
 
@@ -128,10 +136,6 @@ def latest_release_tag() -> str | None:
         return None
 
 
-def current_version() -> str:
-    return helper_capture("bump-version", "--part", "patch").splitlines()[-1]
-
-
 def project_version() -> str:
     command = (
         "import tomllib; "
@@ -140,17 +144,57 @@ def project_version() -> str:
     return capture([str(PYTHON), "-c", command])
 
 
+def parse_version(version: str) -> tuple[str, int]:
+    match = VERSION_RE.fullmatch(version)
+    if match is None:
+        raise SystemExit(f"unsupported release version: {version!r}")
+    return match.group("base"), int(match.group("post") or 0)
+
+
+def upstream_vizdoom_version() -> str:
+    with (PACKAGE_ROOT / "pyproject.toml").open("rb") as stream:
+        project = tomllib.load(stream)["project"]
+    matches = []
+    for dependency in project.get("dependencies", []):
+        match = UPSTREAM_DEPENDENCY_RE.fullmatch(dependency)
+        if match is not None:
+            matches.append(match.group("version"))
+    if len(matches) != 1:
+        raise SystemExit(
+            "pyproject.toml must contain exactly one exact "
+            "'vizdoom==MAJOR.MINOR.PATCH' dependency"
+        )
+    return matches[0]
+
+
+def next_post_version(current: str, upstream_base: str) -> str:
+    current_base, current_post = parse_version(current)
+    parse_version(upstream_base)
+    if current_base != upstream_base:
+        return f"{upstream_base}.post1"
+    return f"{current_base}.post{current_post + 1}"
+
+
 def target_version(args: argparse.Namespace) -> str:
+    current = project_version()
+    upstream_base = upstream_vizdoom_version()
     if args.to:
         version = args.to
-    elif args.part:
-        version = helper_capture("bump-version", "--part", args.part).splitlines()[-1]
     else:
-        current = project_version()
         current_tag = f"vizdoom-turbo-v{current}"
         version = current
-        if tag_exists(current_tag) or not pypi_version_is_unused(current):
-            version = helper_capture("bump-version", "--part", "patch").splitlines()[-1]
+        current_base, _ = parse_version(current)
+        if current_base != upstream_base:
+            version = next_post_version(current, upstream_base)
+        elif tag_exists(current_tag) or not pypi_version_is_unused(current):
+            version = next_post_version(current, upstream_base)
+    target_base, _ = parse_version(version)
+    if target_base != upstream_base and not args.allow_upstream_base_mismatch:
+        raise SystemExit(
+            f"target version {version} is based on {target_base}, but the "
+            f"pinned upstream ViZDoom release is {upstream_base}; pass "
+            "--allow-upstream-base-mismatch to override"
+        )
     helper("check-pypi", "--version", version)
     return version
 
@@ -281,9 +325,15 @@ def parse_args() -> argparse.Namespace:
         description=__doc__,
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    versions = parser.add_mutually_exclusive_group()
-    versions.add_argument("--to", help="exact MAJOR.MINOR.PATCH version")
-    versions.add_argument("--part", choices=("patch", "minor", "major"))
+    parser.add_argument(
+        "--to",
+        help="exact upstream-based release version, for example 1.3.0.post2",
+    )
+    parser.add_argument(
+        "--allow-upstream-base-mismatch",
+        action="store_true",
+        help="allow a target version whose base differs from the pinned ViZDoom release",
+    )
     parser.add_argument("--skip-checks", action="store_true")
     parser.add_argument("--dry-run-push", action="store_true")
     return parser.parse_args()

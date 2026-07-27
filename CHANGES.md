@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Nothing yet.
+- Align turbo release versions with upstream ViZDoom using PEP 440 post releases.
 
 ## 0.1.3 - 2026-07-27
 

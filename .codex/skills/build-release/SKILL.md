@@ -10,9 +10,12 @@ visible on PyPI. Do not manually replay version bumps, tags, builds, or uploads
 unless the automated publish job fails and the user explicitly requests
 recovery.
 
-The `turbo/` package owns normal semantic versions independently from upstream
-ViZDoom. An untagged, unused version in `turbo/pyproject.toml` is pending;
-otherwise the release script selects the next patch.
+The `turbo/` package uses the pinned stable ViZDoom dependency as its release
+base and PEP 440 post releases for turbo revisions. For example, turbo releases
+against ViZDoom 1.3.0 are `1.3.0.post1`, `1.3.0.post2`, and so on. When the
+exact `vizdoom` dependency advances, the next turbo release resets to
+`<upstream>.post1`. An untagged, unused version in `turbo/pyproject.toml` is
+pending; otherwise the release script selects the next post release.
 The release script requires a clean tree synchronized with its upstream, an
 unused PyPI version, consistent Python and Rust metadata, locked dependencies,
 passing local checks, and a valid changelog. It commits the release metadata,
@@ -43,19 +46,14 @@ UV_CACHE_DIR=turbo/.uv-cache uv sync --project turbo --frozen --all-extras --gro
 turbo/scripts/release.py
 ```
 
-For an exact version or non-patch bump, invoke the same script with the
-appropriate version option:
+For an exact upstream-based version, invoke the same script with:
 
 ```bash
-turbo/scripts/release.py --to <version>
+turbo/scripts/release.py --to <version>.post<N>
 ```
 
-```bash
-turbo/scripts/release.py --part minor
-```
-
-Use `--part major` for a major release. If preparation fails, report the exact
-gate and stop.
+The version base must match the exact `vizdoom` dependency in
+`turbo/pyproject.toml`. If preparation fails, report the exact gate and stop.
 
 3. Capture the printed tag, resolve its commit, and monitor the matching
 GitHub Actions run:

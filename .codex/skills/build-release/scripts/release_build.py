@@ -29,7 +29,12 @@ RELEASE_PLATFORMS = (
     "linux-x86_64",
     "linux-aarch64",
 )
-VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+VERSION_PATTERN = re.compile(
+    r"^(?P<base>[0-9]+\.[0-9]+\.[0-9]+)(?:\.post(?P<post>[0-9]+))?$"
+)
+UPSTREAM_DEPENDENCY_PATTERN = re.compile(
+    r"^vizdoom==(?P<version>[0-9]+\.[0-9]+\.[0-9]+)$"
+)
 
 
 def run(args: list[str], *, env: dict[str, str] | None = None) -> None:
@@ -70,14 +75,44 @@ def cargo_lock_version() -> str:
     raise SystemExit(f"{PACKAGE_NAME!r} is missing from Cargo.lock")
 
 
-def validate_version(version: str) -> None:
-    if not VERSION_PATTERN.fullmatch(version):
-        raise SystemExit(f"release version must be MAJOR.MINOR.PATCH: {version!r}")
+def parse_version(version: str) -> tuple[str, int]:
+    match = VERSION_PATTERN.fullmatch(version)
+    if match is None:
+        raise SystemExit(
+            "release version must be MAJOR.MINOR.PATCH or "
+            f"MAJOR.MINOR.PATCH.postN: {version!r}"
+        )
+    return match.group("base"), int(match.group("post") or 0)
+
+
+def upstream_vizdoom_version() -> str:
+    project = read_toml(PACKAGE_ROOT / "pyproject.toml")["project"]
+    assert isinstance(project, dict)
+    dependencies = project.get("dependencies", [])
+    assert isinstance(dependencies, list)
+    matches = []
+    for dependency in dependencies:
+        if isinstance(dependency, str):
+            match = UPSTREAM_DEPENDENCY_PATTERN.fullmatch(dependency)
+            if match is not None:
+                matches.append(match.group("version"))
+    if len(matches) != 1:
+        raise SystemExit(
+            "pyproject.toml must contain exactly one exact "
+            "'vizdoom==MAJOR.MINOR.PATCH' dependency"
+        )
+    return matches[0]
+
+
+def next_post_version(version: str) -> str:
+    base, post = parse_version(version)
+    return f"{base}.post{post + 1}"
 
 
 def check_version(args: argparse.Namespace) -> None:
     expected = args.version or project_version()
-    validate_version(expected)
+    expected_base, _ = parse_version(expected)
+    upstream = upstream_vizdoom_version()
     project = read_toml(PACKAGE_ROOT / "pyproject.toml")["project"]
     assert isinstance(project, dict)
     actual = {
@@ -85,32 +120,38 @@ def check_version(args: argparse.Namespace) -> None:
         "pyproject.toml": project_version(),
         "Cargo.toml": cargo_version(),
         "Cargo.lock": cargo_lock_version(),
+        "upstream ViZDoom": upstream,
+    }
+    wanted = {
+        "project.name": PACKAGE_NAME,
+        "pyproject.toml": expected,
+        "Cargo.toml": expected_base,
+        "Cargo.lock": expected_base,
+        "upstream ViZDoom": expected_base,
     }
     failures = {
         key: value
         for key, value in actual.items()
-        if value != (PACKAGE_NAME if key == "project.name" else expected)
+        if value != wanted[key]
     }
     if failures:
         raise SystemExit(
             f"release metadata mismatch for {expected}: "
-            + ", ".join(f"{key}={value!r}" for key, value in failures.items())
+            + ", ".join(
+                f"{key}={value!r}, expected {wanted[key]!r}"
+                for key, value in failures.items()
+            )
         )
-    print(json.dumps({"package": PACKAGE_NAME, "version": expected}, indent=2))
-
-
-def split_version(version: str) -> tuple[int, int, int]:
-    validate_version(version)
-    return tuple(int(part) for part in version.split("."))  # type: ignore[return-value]
-
-
-def next_version(version: str, part: str) -> str:
-    major, minor, patch = split_version(version)
-    if part == "major":
-        return f"{major + 1}.0.0"
-    if part == "minor":
-        return f"{major}.{minor + 1}.0"
-    return f"{major}.{minor}.{patch + 1}"
+    print(
+        json.dumps(
+            {
+                "package": PACKAGE_NAME,
+                "version": expected,
+                "upstream_vizdoom": upstream,
+            },
+            indent=2,
+        )
+    )
 
 
 def replace_section_version(path: Path, section: str, version: str) -> None:
@@ -126,11 +167,15 @@ def replace_section_version(path: Path, section: str, version: str) -> None:
 
 def bump_version(args: argparse.Namespace) -> None:
     current = project_version()
-    target = args.to or next_version(current, args.part)
-    validate_version(target)
+    target = args.to or next_post_version(current)
+    target_base, _ = parse_version(target)
     if args.write:
         replace_section_version(PACKAGE_ROOT / "pyproject.toml", "project", target)
-        replace_section_version(PACKAGE_ROOT / "Cargo.toml", "package", target)
+        replace_section_version(
+            PACKAGE_ROOT / "Cargo.toml",
+            "package",
+            target_base,
+        )
     print(target)
 
 
@@ -149,7 +194,7 @@ def fetch_pypi() -> dict[str, object]:
 
 
 def check_pypi(args: argparse.Namespace) -> None:
-    validate_version(args.version)
+    parse_version(args.version)
     releases = fetch_pypi().get("releases", {})
     if not isinstance(releases, dict):
         raise SystemExit("unexpected PyPI releases payload")
@@ -164,7 +209,7 @@ def wheelhouse(version: str, platform: str) -> Path:
 
 def build_platform(args: argparse.Namespace) -> None:
     version = args.version or project_version()
-    validate_version(version)
+    parse_version(version)
     output = wheelhouse(version, args.platform)
     if output.exists():
         raise SystemExit(f"release output already exists: {output}")
@@ -405,7 +450,6 @@ def main() -> None:
 
     bump = commands.add_parser("bump-version")
     bump.add_argument("--to")
-    bump.add_argument("--part", choices=("major", "minor", "patch"), default="patch")
     bump.add_argument("--write", action="store_true")
     bump.set_defaults(func=bump_version)
 
