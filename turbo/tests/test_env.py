@@ -9,6 +9,32 @@ import pytest
 from gymnasium.vector import AutoresetMode
 from vizdoom_turbo import VizDoomTurboVecEnv, VizdoomTurboVecEnv, scenario_buttons
 
+SUPPORTED_SCENARIOS = (
+    "basic",
+    "basic_audio",
+    "basic_notifications",
+    "deadly_corridor",
+    "deathmatch",
+    "defend_the_center",
+    "defend_the_line",
+    "health_gathering",
+    "health_gathering_supreme",
+    "my_way_home",
+    "predict_position",
+    "take_cover",
+)
+REGISTERED_TURBO_GAMES = {
+    "VizdoomBasic-Turbo-v0": "VizdoomBasic-v1",
+    "VizdoomDeadlyCorridor-Turbo-v0": "VizdoomDeadlyCorridor-v1",
+    "VizdoomDefendCenter-Turbo-v0": "VizdoomDefendCenter-v1",
+    "VizdoomDefendLine-Turbo-v0": "VizdoomDefendLine-v1",
+    "VizdoomHealthGathering-Turbo-v0": "VizdoomHealthGathering-v1",
+    "VizdoomHealthGatheringSupreme-Turbo-v0": "VizdoomHealthGatheringSupreme-v1",
+    "VizdoomMyWayHome-Turbo-v0": "VizdoomMyWayHome-v1",
+    "VizdoomPredictPosition-Turbo-v0": "VizdoomPredictPosition-v1",
+    "VizdoomTakeCover-Turbo-v0": "VizdoomTakeCover-v1",
+}
+
 
 def make_env(**overrides) -> VizdoomTurboVecEnv:
     options = {
@@ -74,6 +100,35 @@ def test_public_signature_matches_turbo_constructor_contract() -> None:
         "MOVE_RIGHT",
         "ATTACK",
     )
+    for registered_id, game in REGISTERED_TURBO_GAMES.items():
+        spec = gym.spec(registered_id)
+        assert spec.vector_entry_point == "vizdoom_turbo:VizdoomTurboVecEnv"
+        assert spec.kwargs["game"] == game
+
+
+@pytest.mark.parametrize("scenario", SUPPORTED_SCENARIOS)
+def test_every_supported_scenario_resets_and_steps(scenario: str) -> None:
+    env = VizdoomTurboVecEnv(
+        game=scenario,
+        num_envs=1,
+        num_threads=1,
+        use_restricted_actions="minimal",
+        obs_resize=(24, 32),
+        obs_grayscale=True,
+        obs_layout="chw",
+        frame_skip=1,
+        frame_stack=2,
+        info_filter="none",
+    )
+    try:
+        observations, infos = env.reset(seed=918)
+        assert observations.shape == (1, 2, 24, 32)
+        assert infos["state_index"].tolist() == [0]
+        transition = env.step(np.zeros(1, dtype=np.int64))
+        assert transition[0].shape == observations.shape
+        assert transition[1].shape == (1,)
+    finally:
+        env.close()
 
 
 def test_real_vector_step_and_masked_reset_preserve_other_lane() -> None:

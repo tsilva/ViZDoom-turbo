@@ -10,9 +10,9 @@ import operator
 import secrets
 import tempfile
 from collections.abc import Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Condition, Thread
 from typing import Any, Literal
 
 import gymnasium as gym
@@ -21,7 +21,7 @@ import vizdoom as vzd
 from gymnasium.vector import AutoresetMode, VectorEnv
 from gymnasium.vector.utils import batch_space
 
-from ._vizdoom_turbo import preprocess_into
+from ._vizdoom_turbo import ActionHistory, ImageProcessor
 from .action_tables import ActionTable, resolve_custom_action
 
 _DEFAULT_STATE = "default"
@@ -39,6 +39,85 @@ _BUILTIN_SCENARIOS = {
     "predict_position": "predict_position.cfg",
     "take_cover": "take_cover.cfg",
 }
+
+
+class _LanePool:
+    """Persistent fixed-lane workers without per-step Future allocations."""
+
+    def __init__(self, num_threads: int):
+        self._num_threads = num_threads
+        self._condition = Condition()
+        self._generation = 0
+        self._completed_workers = 0
+        self._closed = False
+        self._jobs: Sequence[tuple[Any, tuple[Any, ...]]] = ()
+        self._results: list[Any] = []
+        self._errors: list[BaseException | None] = []
+        self._threads = [
+            Thread(
+                target=self._worker,
+                args=(worker,),
+                name=f"vizdoom-turbo-{worker}",
+                daemon=True,
+            )
+            for worker in range(num_threads)
+        ]
+        for thread in self._threads:
+            thread.start()
+
+    def _worker(self, worker: int) -> None:
+        observed_generation = 0
+        while True:
+            with self._condition:
+                self._condition.wait_for(
+                    lambda: self._closed or self._generation != observed_generation
+                )
+                if self._closed:
+                    return
+                observed_generation = self._generation
+                jobs = self._jobs
+            for index in range(worker, len(jobs), self._num_threads):
+                callback, arguments = jobs[index]
+                try:
+                    self._results[index] = callback(*arguments)
+                except BaseException as exc:
+                    self._errors[index] = exc
+            with self._condition:
+                self._completed_workers += 1
+                if self._completed_workers == self._num_threads:
+                    self._condition.notify()
+
+    def run(self, jobs: Sequence[tuple[Any, tuple[Any, ...]]]) -> list[Any]:
+        with self._condition:
+            if self._closed:
+                raise RuntimeError("lane pool is closed")
+            self._jobs = jobs
+            self._results = [None] * len(jobs)
+            self._errors = [None] * len(jobs)
+            self._completed_workers = 0
+            self._generation += 1
+            self._condition.notify_all()
+            self._condition.wait_for(
+                lambda: self._completed_workers == self._num_threads
+            )
+            results = self._results
+            errors = self._errors
+            self._jobs = ()
+            self._results = []
+            self._errors = []
+        for error in errors:
+            if error is not None:
+                raise error
+        return results
+
+    def close(self) -> None:
+        with self._condition:
+            if self._closed:
+                return
+            self._closed = True
+            self._condition.notify_all()
+        for thread in self._threads:
+            thread.join()
 
 
 def _positive_int(value: Any, name: str) -> int:
@@ -454,9 +533,6 @@ class VizdoomTurboVecEnv(VectorEnv):
             0, 255, shape=single_shape, dtype=np.uint8
         )
         self.observation_space = batch_space(self.single_observation_space, self.num_envs)
-        self._processed = np.empty(
-            (self.num_envs, self.obs_height, self.obs_width, channels), dtype=np.uint8
-        )
         self._stack = np.zeros(
             (
                 self.num_envs,
@@ -468,10 +544,28 @@ class VizdoomTurboVecEnv(VectorEnv):
             dtype=np.uint8,
         )
         self._stack_heads = np.zeros(self.num_envs, dtype=np.int64)
-        self._raw_frames = np.zeros(
-            (self.num_envs, self.raw_height, self.raw_width, 3), dtype=np.uint8
+        self._image_processor = ImageProcessor(
+            self.num_envs,
+            self.raw_height,
+            self.raw_width,
+            self.obs_height,
+            self.obs_width,
+            channels,
+            list(self.obs_crop),
+            self.obs_crop_mode == "mask",
+            self.obs_crop_fill,
+            self.obs_resize_algorithm,
+            self.frame_stack,
+            self.obs_layout,
+            self.num_threads,
         )
-        self._previous_raw = np.zeros_like(self._raw_frames)
+        raw_shape = (self.raw_height, self.raw_width, 3)
+        self._raw_frames = [
+            np.zeros(raw_shape, dtype=np.uint8) for _ in range(self.num_envs)
+        ]
+        self._previous_raw = [
+            np.zeros(raw_shape, dtype=np.uint8) for _ in range(self.num_envs)
+        ]
         buffer_count = 1 if self.obs_copy == "unsafe_view" else 2
         self._obs_buffers = [
             np.empty((self.num_envs, *single_shape), dtype=np.uint8)
@@ -498,9 +592,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             _EpisodeOrigin(lane, self._default_state_index, 0)
             for lane in range(self.num_envs)
         ]
-        self._action_history: list[list[np.ndarray]] = [
-            [] for _ in range(self.num_envs)
-        ]
+        self._action_history = ActionHistory(self.num_envs, len(self._button_enums))
         self._last_actions = np.zeros(
             (self.num_envs, len(self._button_enums)), dtype=np.float64
         )
@@ -538,17 +630,12 @@ class VizdoomTurboVecEnv(VectorEnv):
         self._config_hash = hashlib.sha256(
             json.dumps(config_payload, sort_keys=True).encode("utf-8")
         ).hexdigest()
-        self._pool = ThreadPoolExecutor(
-            max_workers=self.num_threads,
-            thread_name_prefix="vizdoom-turbo",
-        )
+        self._pool = _LanePool(self.num_threads)
         self._games = [self._new_game() for _ in range(self.num_envs)]
         for lane, lane_game in enumerate(self._games):
             lane_game.set_seed(lane)
-        futures = [self._pool.submit(lane_game.init) for lane_game in self._games]
         try:
-            for future in futures:
-                future.result()
+            self._pool.run([(lane_game.init, ()) for lane_game in self._games])
         except BaseException:
             self.close()
             raise
@@ -661,6 +748,9 @@ class VizdoomTurboVecEnv(VectorEnv):
             raise ValueError(f"unknown info keys: {sorted(unknown_signals)}")
         self._info_mode = mode
         self._info_keys = tuple(selected)
+        self._collect_game_variables = mode != "none" and any(
+            key in self.game_variable_names for key in self._info_keys
+        )
 
     def _next_buffers(self):
         index = self._buffer_index
@@ -675,31 +765,6 @@ class VizdoomTurboVecEnv(VectorEnv):
     def _returned_obs(self, value: np.ndarray) -> np.ndarray:
         return value.copy() if self.obs_copy == "copy" else value
 
-    def _write_observations(self, output: np.ndarray) -> None:
-        channels = self._stack.shape[-1]
-        for lane in range(self.num_envs):
-            head = int(self._stack_heads[lane])
-            for output_slot in range(self.frame_stack):
-                source_slot = (head + 1 + output_slot) % self.frame_stack
-                frame = self._stack[lane, source_slot]
-                channel_start = output_slot * channels
-                channel_end = channel_start + channels
-                if self.obs_layout == "chw":
-                    output[lane, channel_start:channel_end] = frame.transpose(2, 0, 1)
-                else:
-                    output[lane, :, :, channel_start:channel_end] = frame
-
-    def _preprocess(self, previous: np.ndarray | None = None) -> None:
-        preprocess_into(
-            self._raw_frames,
-            self._processed,
-            list(self.obs_crop),
-            self.obs_crop_mode == "mask",
-            self.obs_crop_fill,
-            self.obs_resize_algorithm,
-            previous,
-        )
-
     def _read_screen(self, lane_game: Any, fallback: np.ndarray) -> np.ndarray:
         state = lane_game.get_state()
         if state is None or state.screen_buffer is None:
@@ -712,7 +777,9 @@ class VizdoomTurboVecEnv(VectorEnv):
             )
         return np.ascontiguousarray(screen)
 
-    def _raw_signals(self, lane_game: Any) -> np.ndarray:
+    def _raw_signals(self, lane_game: Any) -> np.ndarray | None:
+        if not self._collect_game_variables:
+            return None
         values = np.empty(len(self._game_variables), dtype=np.float64)
         for index, variable in enumerate(self._game_variables):
             try:
@@ -722,6 +789,8 @@ class VizdoomTurboVecEnv(VectorEnv):
         return values
 
     def _update_signal_row(self, lane: int) -> None:
+        if self._info_mode == "none":
+            return
         width = len(self._game_variables)
         lane_game = self._games[lane]
         self._signals[lane, width] = float(lane_game.get_episode_time())
@@ -921,7 +990,8 @@ class VizdoomTurboVecEnv(VectorEnv):
                 noop_counts[lane] = self._rngs[lane].integers(
                     1, self.noop_reset_max + 1
                 )
-        futures = {}
+        reset_lanes = []
+        reset_jobs = []
         for lane in np.flatnonzero(mask):
             lane_index = int(lane)
             snapshot = snapshot_values[lane_index]
@@ -930,26 +1000,32 @@ class VizdoomTurboVecEnv(VectorEnv):
                 if snapshot is not None
                 else self._assets[int(state_indices[lane_index])]
             )
-            futures[lane_index] = self._pool.submit(
-                self._reset_lane,
-                lane_index,
-                game_seeds[lane_index],
-                asset,
-                snapshot,
-                int(noop_counts[lane_index]),
+            reset_lanes.append(lane_index)
+            reset_jobs.append(
+                (
+                    self._reset_lane,
+                    (
+                        lane_index,
+                        game_seeds[lane_index],
+                        asset,
+                        snapshot,
+                        int(noop_counts[lane_index]),
+                    ),
+                )
             )
-        for lane, future in futures.items():
-            raw, raw_signals = future.result()
+        for lane, (raw, raw_signals) in zip(
+            reset_lanes, self._pool.run(reset_jobs), strict=True
+        ):
             self._raw_frames[lane] = raw
-            width = len(self._game_variables)
-            self._signals[lane, :width] = raw_signals
-        self._preprocess()
+            if raw_signals is not None:
+                width = len(self._game_variables)
+                self._signals[lane, :width] = raw_signals
         self._active_state_indices.setflags(write=True)
+        self._action_history.clear(static_mask)
         for lane in np.flatnonzero(mask):
             lane_index = int(lane)
             snapshot = snapshot_values[lane_index]
             if snapshot is None:
-                self._stack[lane_index] = self._processed[lane_index]
                 self._stack_heads[lane_index] = 0
                 self._episode_returns[lane_index] = 0.0
                 self._last_actions[lane_index] = 0.0
@@ -959,7 +1035,6 @@ class VizdoomTurboVecEnv(VectorEnv):
                     state_index=int(state_indices[lane_index]),
                     noop_count=int(noop_counts[lane_index]),
                 )
-                self._action_history[lane_index] = []
             else:
                 self._stack[lane_index] = snapshot.stack
                 self._stack_heads[lane_index] = snapshot.stack_head
@@ -971,16 +1046,21 @@ class VizdoomTurboVecEnv(VectorEnv):
                 self._active_state_indices[lane_index] = snapshot.state_index
                 self._episode_returns[lane_index] = snapshot.episode_return
                 self._episode_origins[lane_index] = snapshot.origin
-                self._action_history[lane_index] = [
-                    action.copy() for action in snapshot.action_history
-                ]
+                self._action_history.replace_lane(lane_index, snapshot.action_history)
         self._active_state_indices.setflags(write=False)
         self._initialized[mask] = True
         self._pending_reset[mask] = False
-        for lane in np.flatnonzero(mask):
-            self._update_signal_row(int(lane))
+        if self._info_mode != "none":
+            for lane in np.flatnonzero(mask):
+                self._update_signal_row(int(lane))
         observations, _rewards, _terminated, _truncated = self._next_buffers()
-        self._write_observations(observations)
+        self._image_processor.reset_frames_into(
+            self._raw_frames,
+            self._stack,
+            self._stack_heads,
+            observations,
+            static_mask,
+        )
         infos = self._infos(mask.copy())
         active_labels = np.asarray(
             [self.state_catalog[index] for index in self._active_state_indices],
@@ -1031,7 +1111,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         self,
         lane: int,
         action: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray, float, bool, bool, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, float, bool, bool, np.ndarray | None]:
         lane_game = self._games[lane]
         fallback = self._raw_frames[lane]
         lane_game.set_action(action.tolist())
@@ -1070,34 +1150,44 @@ class VizdoomTurboVecEnv(VectorEnv):
                     self._last_actions[lane] = requested[lane]
         else:
             self._last_actions[:] = requested
-        futures = [
-            self._pool.submit(self._step_lane, lane, applied[lane])
-            for lane in range(self.num_envs)
-        ]
+        results = self._pool.run(
+            [
+                (self._step_lane, (lane, applied[lane]))
+                for lane in range(self.num_envs)
+            ]
+        )
         observations, rewards, terminated, truncated = self._next_buffers()
-        for lane, future in enumerate(futures):
-            raw, previous, reward, lane_terminated, lane_truncated, raw_signals = (
-                future.result()
-            )
+        for lane, (
+            raw,
+            previous,
+            reward,
+            lane_terminated,
+            lane_truncated,
+            raw_signals,
+        ) in enumerate(results):
             self._raw_frames[lane] = raw
             self._previous_raw[lane] = previous
             rewards[lane] = reward
             terminated[lane] = lane_terminated
             truncated[lane] = lane_truncated
-            width = len(self._game_variables)
-            self._signals[lane, :width] = raw_signals
-            self._action_history[lane].append(applied[lane].copy())
+            if raw_signals is not None:
+                width = len(self._game_variables)
+                self._signals[lane, :width] = raw_signals
+        self._action_history.append(applied)
         if self.reward_clip is not None:
             np.clip(rewards, self.reward_clip[0], self.reward_clip[1], out=rewards)
-        self._preprocess(self._previous_raw if self.maxpool_last_two else None)
-        self._stack_heads = (self._stack_heads + 1) % self.frame_stack
-        for lane in range(self.num_envs):
-            self._stack[lane, self._stack_heads[lane]] = self._processed[lane]
-        self._write_observations(observations)
+        self._image_processor.step_frames_into(
+            self._raw_frames,
+            self._stack,
+            self._stack_heads,
+            observations,
+            self._previous_raw if self.maxpool_last_two else None,
+        )
         self._episode_returns += rewards
         np.logical_or(terminated, truncated, out=self._pending_reset)
-        for lane in range(self.num_envs):
-            self._update_signal_row(lane)
+        if self._info_mode != "none":
+            for lane in range(self.num_envs):
+                self._update_signal_row(lane)
         return (
             self._returned_obs(observations),
             rewards,
@@ -1131,7 +1221,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         for selected_lane in np.flatnonzero(mask):
             lane = int(selected_lane)
             history = np.asarray(
-                self._action_history[lane], dtype=np.float64
+                self._action_history.lane(lane), dtype=np.float64
             ).reshape((-1, len(self.buttons)))
             result[lane] = _LiveSnapshot(
                 owner=self._owner,
@@ -1171,13 +1261,11 @@ class VizdoomTurboVecEnv(VectorEnv):
         pool = getattr(self, "_pool", None)
         games = getattr(self, "_games", ())
         if pool is not None:
-            futures = [pool.submit(game.close) for game in games]
-            for future in futures:
-                try:
-                    future.result()
-                except Exception:
-                    pass
-            pool.shutdown(wait=True)
+            try:
+                pool.run([(game.close, ()) for game in games])
+            except Exception:
+                pass
+            pool.close()
         tempdir = getattr(self, "_tempdir", None)
         if tempdir is not None:
             tempdir.cleanup()

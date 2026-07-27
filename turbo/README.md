@@ -6,7 +6,7 @@
 
 `vizdoom-turbo` is a Python library for reinforcement-learning researchers who need fast, parallel ViZDoom environments. It provides a Gymnasium vector environment that can be used directly or selected as an isolated environment provider in `rlab`.
 
-Each vector lane owns an independent `DoomGame`. Lanes advance concurrently through ViZDoom's native API, while Rust processes frames in batches for policy-ready observations.
+Each vector lane owns an independent `DoomGame`. Lanes advance concurrently through ViZDoom's native API, while a bounded Rust worker pool applies max-pooling, crop, resize, grayscale conversion, frame-stack rotation, and final CHW/HWC layout in one GIL-free native call. Resize geometry and area-sampling tables are compiled once per environment instead of rebuilt per step.
 
 ## Install
 
@@ -95,7 +95,10 @@ uv run ruff check .                                       # lint Python
 cargo fmt --check                                         # check Rust formatting
 cargo clippy --all-targets --all-features -- -D warnings  # lint Rust
 uv build --wheel                                          # build the distributable wheel
+uv run python benchmarks/benchmark_sps.py                 # measure the canonical SPS profile
 ```
+
+For release-to-release checks, use `benchmarks/compare_contract.py` to compare deterministic traces and `benchmarks/compare_sps.py` for alternating paired SPS measurements. Both commands accept separate baseline and candidate Python interpreters so the released wheel and working tree stay isolated.
 
 ## Notes
 
