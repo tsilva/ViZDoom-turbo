@@ -4,6 +4,15 @@
 
 - Nothing yet.
 
+## 1.3.0.post3 - 2026-07-27
+
+- Refresh Turbo API documentation.
+- Optimize 32-lane ViZDoom throughput.
+- Add iterative SPS optimization skill.
+- Format Rust preprocessing implementation.
+- Address Rust 1.95 Clippy warnings.
+- Keep custom core available in editable installs.
+
 ## 1.3.0.post2 - 2026-07-27
 
 - Add the immutable Turbo Vector API v1 declaration for capabilities, signals,
