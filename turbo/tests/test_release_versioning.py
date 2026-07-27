@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -33,10 +34,15 @@ def release_build() -> ModuleType:
 
 @pytest.fixture(scope="module")
 def build_backend() -> ModuleType:
-    return load_module(
-        "vizdoom_turbo_build_backend",
-        REPO_ROOT / "turbo/build_backend.py",
-    )
+    package_root = str(REPO_ROOT / "turbo")
+    sys.path.insert(0, package_root)
+    try:
+        return load_module(
+            "vizdoom_turbo_build_backend",
+            REPO_ROOT / "turbo/build_backend.py",
+        )
+    finally:
+        sys.path.remove(package_root)
 
 
 @pytest.mark.parametrize(
