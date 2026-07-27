@@ -92,6 +92,7 @@ def test_public_signature_matches_turbo_constructor_contract() -> None:
     assert VizDoomTurboVecEnv is VizdoomTurboVecEnv
     assert issubclass(VizdoomTurboVecEnv, gym.vector.VectorEnv)
     assert VizdoomTurboVecEnv.metadata["autoreset_mode"] is AutoresetMode.DISABLED
+    assert VizdoomTurboVecEnv.metadata["turbo_api_version"] == 1
     assert gym.spec("VizdoomBasic-Turbo-v0").vector_entry_point == (
         "vizdoom_turbo:VizdoomTurboVecEnv"
     )
@@ -104,6 +105,43 @@ def test_public_signature_matches_turbo_constructor_contract() -> None:
         spec = gym.spec(registered_id)
         assert spec.vector_entry_point == "vizdoom_turbo:VizdoomTurboVecEnv"
         assert spec.kwargs["game"] == game
+
+
+def test_turbo_api_v1_capabilities_signals_ownership_and_rendering() -> None:
+    env = make_env()
+    try:
+        env.reset(seed=19)
+        assert env.observation_ownership == "safe_view"
+        assert env.observation_buffer_depth == 2
+        assert env.live_snapshots_deterministic is True
+        assert env.capabilities["supported_action_modes"] == (
+            "all",
+            "filtered",
+            "multi_discrete",
+            "custom_discrete",
+        )
+        assert tuple(env.signal_schema) == tuple(env._info_keys)
+        images = env.get_images()
+        assert len(images) == env.num_envs
+        assert all(image.dtype == np.uint8 and image.ndim == 3 for image in images)
+        np.testing.assert_array_equal(env.render(), images[0])
+    finally:
+        env.close()
+
+
+def test_legacy_reset_selector_names_are_rejected() -> None:
+    env = make_env()
+    try:
+        with pytest.raises(ValueError, match="unsupported reset options"):
+            env.reset(
+                options={
+                    "start_indices": np.zeros(env.num_envs, dtype=np.int32)
+                }
+            )
+        with pytest.raises(ValueError, match="unsupported reset options"):
+            env.reset(options={"start_ids": np.full(env.num_envs, "default")})
+    finally:
+        env.close()
 
 
 @pytest.mark.parametrize("scenario", SUPPORTED_SCENARIOS)

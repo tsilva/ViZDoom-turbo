@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-- Nothing yet.
+- Add the immutable Turbo Vector API v1 declaration for capabilities, signals,
+  action semantics, observation ownership, state catalogs, and per-lane RGB
+  rendering.
+- Remove legacy state-name properties and reset selectors in favor of
+  `state_catalog`, `active_state_indices()`, and `state_indices`.
 
 ## 1.3.0.post1 - 2026-07-27
 

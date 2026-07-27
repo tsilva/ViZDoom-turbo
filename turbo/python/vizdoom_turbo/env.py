@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Condition, Thread
+from types import MappingProxyType
 from typing import Any, Literal
 
 import gymnasium as gym
@@ -362,6 +363,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         "autoreset_mode": AutoresetMode.DISABLED,
         "render_modes": ["rgb_array"],
         "render_fps": int(vzd.DEFAULT_TICRATE),
+        "turbo_api_version": 1,
     }
     supports_live_snapshots = True
 
@@ -442,6 +444,16 @@ class VizdoomTurboVecEnv(VectorEnv):
         self.obs_copy = str(obs_copy).casefold()
         if self.obs_copy not in {"copy", "safe_view", "unsafe_view"}:
             raise ValueError("obs_copy must be 'copy', 'safe_view', or 'unsafe_view'")
+        self.observation_ownership = (
+            "owned"
+            if self.obs_copy == "copy"
+            else "unsafe_view" if self.obs_copy == "unsafe_view" else "safe_view"
+        )
+        self.observation_buffer_depth = (
+            None
+            if self.obs_copy == "copy"
+            else 1 if self.obs_copy == "unsafe_view" else 2
+        )
         self.obs_crop = _normalize_crop(obs_crop)
         self.obs_crop_mode = str(obs_crop_mode).casefold()
         if self.obs_crop_mode not in {"remove", "mask"}:
@@ -473,18 +485,6 @@ class VizdoomTurboVecEnv(VectorEnv):
             state, state_catalog, state_dir
         )
         self.state_catalog = tuple(asset.label for asset in self._assets)
-        self.initial_state_names = self.state_catalog
-        self.initial_state_assets = tuple(
-            {
-                "name": asset.label,
-                "sha256": (
-                    hashlib.sha256(asset.payload).hexdigest()
-                    if asset.payload is not None
-                    else None
-                ),
-            }
-            for asset in self._assets
-        )
 
         self._tempdir = tempfile.TemporaryDirectory(prefix="vizdoom-turbo-")
         template = self._new_game()
@@ -606,13 +606,50 @@ class VizdoomTurboVecEnv(VectorEnv):
             "player_dead",
             "pending_reset",
         )
-        self.signal_schema = {
-            name: {"dtype": np.float64, "shape": ()} for name in self._signal_names
-        }
         self._signals = np.zeros(
             (self.num_envs, len(self._signal_names)), dtype=np.float64
         )
         self._configure_info_filter(info_filter)
+        self.signal_schema = MappingProxyType(
+            {
+                name: MappingProxyType(
+                    {
+                        "dtype": np.dtype(np.float64),
+                        "shape": (),
+                        "available_on_reset": self._info_mode == "all",
+                        "available_on_step": self._info_mode != "none",
+                    }
+                )
+                for name in self._info_keys
+            }
+            if self._info_mode != "none"
+            else {}
+        )
+        self.live_snapshots_deterministic = True
+        self.capabilities = MappingProxyType(
+            {
+                "supported_action_modes": (
+                    "all",
+                    "filtered",
+                    "multi_discrete",
+                    "custom_discrete",
+                ),
+                "supported_observation_layouts": ("chw", "hwc"),
+                "supported_resize_algorithms": ("nearest", "bilinear", "area"),
+                "supported_observation_copy_modes": (
+                    "copy",
+                    "safe_view",
+                    "unsafe_view",
+                ),
+                "supports_maxpool_last_two": True,
+                "supports_sticky_action_prob": True,
+                "supports_reward_clipping": True,
+                "supports_noop_reset": True,
+                "supports_state_catalog": True,
+                "supports_live_snapshots": True,
+                "supports_per_lane_rgb": True,
+            }
+        )
         config_payload = {
             "scenario": str(self._scenario.config_path.resolve()),
             "doom_map": self._doom_map,
@@ -927,24 +964,8 @@ class VizdoomTurboVecEnv(VectorEnv):
             if value.owner != self._owner or value.config_hash != self._config_hash:
                 raise ValueError("snapshot belongs to a different environment instance/config")
 
-        state_indices = reset_options.pop(
-            "state_indices", reset_options.pop("start_indices", None)
-        )
-        start_ids = reset_options.pop("start_ids", None)
-        if state_indices is not None and start_ids is not None:
-            raise ValueError("pass state_indices/start_indices or start_ids, not both")
-        if start_ids is not None:
-            ids = np.asarray(start_ids, dtype=object)
-            if ids.shape != (self.num_envs,):
-                raise ValueError(f"start_ids must have shape ({self.num_envs},)")
-            lookup = {name: index for index, name in enumerate(self.state_catalog)}
-            state_indices = np.full(self.num_envs, -1, dtype=np.int32)
-            for lane in np.flatnonzero(mask & ~snapshot_mask):
-                try:
-                    state_indices[lane] = lookup[str(ids[lane])]
-                except KeyError as exc:
-                    raise ValueError(f"unknown start_id {ids[lane]!r}") from exc
-        elif state_indices is None:
+        state_indices = reset_options.pop("state_indices", None)
+        if state_indices is None:
             state_indices = np.full(
                 self.num_envs, self._default_state_index, dtype=np.int32
             )
@@ -1062,13 +1083,6 @@ class VizdoomTurboVecEnv(VectorEnv):
             static_mask,
         )
         infos = self._infos(mask.copy())
-        active_labels = np.asarray(
-            [self.state_catalog[index] for index in self._active_state_indices],
-            dtype=object,
-        )
-        for key in ("start_id", "state", "start_state"):
-            infos[key] = active_labels.copy()
-            infos[f"_{key}"] = mask.copy()
         infos["state_index"] = self._active_state_indices.copy()
         infos["_state_index"] = mask.copy()
         source = np.full(self.num_envs, "environment", dtype=object)
@@ -1198,9 +1212,6 @@ class VizdoomTurboVecEnv(VectorEnv):
 
     def active_state_indices(self) -> np.ndarray:
         return self._active_state_indices
-
-    def active_states(self) -> tuple[str, ...]:
-        return tuple(self.state_catalog[index] for index in self._active_state_indices)
 
     def capture_snapshots(self, mask: np.ndarray) -> tuple[Any | None, ...]:
         if self.closed:
