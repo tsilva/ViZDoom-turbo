@@ -4,6 +4,10 @@
 
 - Nothing yet.
 
+## 1.3.0.post4 - 2026-07-27
+
+- Install native dependencies in release jobs.
+
 ## 1.3.0.post3 - 2026-07-27
 
 - Refresh Turbo API documentation.
