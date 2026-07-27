@@ -907,7 +907,7 @@ wheels = [
 
 [[package]]
 name = "vizdoom-turbo"
-version = "1.3.0.post7"
+version = "1.3.0.post8"
 source = { editable = "." }
 dependencies = [
     { name = "gymnasium" },

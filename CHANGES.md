@@ -4,6 +4,10 @@
 
 - Nothing yet.
 
+## 1.3.0.post8 - 2026-07-27
+
+- Harden release builds and parallel startup.
+
 ## 1.3.0.post7 - 2026-07-27
 
 - Guard cleanup during partial ViZDoom startup.
