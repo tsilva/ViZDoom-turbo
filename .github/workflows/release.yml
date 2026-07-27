@@ -44,6 +44,11 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
 
+      - name: Install ViZDoom build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libboost-all-dev libsdl2-dev libopenal-dev
+
       - name: Install release environment
         working-directory: turbo
         run: uv sync --frozen --all-extras --group release
@@ -133,9 +138,15 @@ jobs:
           restore-keys: |
             cargo-release-v2-${{ matrix.platform }}-cp${{ matrix.python-version }}-
 
-      - name: Install Intel ViZDoom build dependencies
-        if: matrix.platform == 'macos-x86_64'
+      - name: Install macOS ViZDoom build dependencies
+        if: startsWith(matrix.platform, 'macos-')
         run: brew install boost sdl2 openal-soft
+
+      - name: Install Linux ViZDoom build dependencies
+        if: startsWith(matrix.platform, 'linux-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libboost-all-dev libsdl2-dev libopenal-dev
 
       - name: Install release environment
         working-directory: turbo
@@ -184,6 +195,11 @@ jobs:
 
       - name: Set up uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+
+      - name: Install ViZDoom build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libboost-all-dev libsdl2-dev libopenal-dev
 
       - name: Install release environment
         working-directory: turbo
