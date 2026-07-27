@@ -4,6 +4,10 @@
 
 - Nothing yet.
 
+## 1.3.0.post5 - 2026-07-27
+
+- Checkout release build submodules.
+
 ## 1.3.0.post4 - 2026-07-27
 
 - Install native dependencies in release jobs.
