@@ -31,6 +31,14 @@ def release_build() -> ModuleType:
     )
 
 
+@pytest.fixture(scope="module")
+def build_backend() -> ModuleType:
+    return load_module(
+        "vizdoom_turbo_build_backend",
+        REPO_ROOT / "turbo/build_backend.py",
+    )
+
+
 @pytest.mark.parametrize(
     ("current", "upstream", "expected"),
     [
@@ -72,6 +80,56 @@ def test_custom_core_is_bundled_instead_of_a_runtime_dependency(
         for dependency in dependencies
     )
     assert metadata["build-system"]["build-backend"] == "build_backend"
+
+
+def test_editable_build_keeps_staged_custom_core(
+    build_backend: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        build_backend,
+        "build_and_stage",
+        lambda: events.append("stage"),
+    )
+    monkeypatch.setattr(build_backend, "clean", lambda: events.append("clean"))
+
+    def build_editable(*args: object) -> str:
+        events.append("build")
+        return "vizdoom_turbo-editable.whl"
+
+    monkeypatch.setattr(build_backend.maturin, "build_editable", build_editable)
+
+    assert (
+        build_backend.build_editable(str(tmp_path))
+        == "vizdoom_turbo-editable.whl"
+    )
+    assert events == ["stage", "build"]
+
+
+def test_failed_editable_build_cleans_staged_custom_core(
+    build_backend: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        build_backend,
+        "build_and_stage",
+        lambda: events.append("stage"),
+    )
+    monkeypatch.setattr(build_backend, "clean", lambda: events.append("clean"))
+
+    def fail_build(*args: object) -> str:
+        events.append("build")
+        raise RuntimeError("editable build failed")
+
+    monkeypatch.setattr(build_backend.maturin, "build_editable", fail_build)
+
+    with pytest.raises(RuntimeError, match="editable build failed"):
+        build_backend.build_editable(str(tmp_path))
+    assert events == ["stage", "build", "clean"]
 
 
 def test_release_matrix_covers_each_supported_cpython(

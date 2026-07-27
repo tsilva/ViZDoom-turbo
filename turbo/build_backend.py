@@ -7,7 +7,7 @@ from typing import Any
 
 import maturin
 
-from scripts.stage_vizdoom_core import staged_vizdoom_core
+from scripts.stage_vizdoom_core import build_and_stage, clean, staged_vizdoom_core
 
 
 def build_wheel(
@@ -28,12 +28,16 @@ def build_editable(
     config_settings: Mapping[str, Any] | None = None,
     metadata_directory: str | None = None,
 ) -> str:
-    with staged_vizdoom_core():
+    build_and_stage()
+    try:
         return maturin.build_editable(
             wheel_directory,
             config_settings,
             metadata_directory,
         )
+    except BaseException:
+        clean()
+        raise
 
 
 def build_sdist(

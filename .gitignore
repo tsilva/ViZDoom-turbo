@@ -123,6 +123,7 @@ src/vizdoom/zlib/CTestTestfile.cmake
 
 # ViZDoom-turbo Rust/maturin package
 turbo/.uv-cache/
+turbo/python/vizdoom/
 turbo/target/
 turbo/target-release-*/
 turbo/wheelhouse-v*/
