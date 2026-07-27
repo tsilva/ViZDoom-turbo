@@ -528,7 +528,9 @@ FString GetUserFile (const char *file)
 		*/
 
 		//if (!moved && mkdir (path, S_IRUSR | S_IWUSR | S_IXUSR) == -1)
-		if (mkdir (path, S_IRUSR | S_IWUSR | S_IXUSR) == -1)
+		//VIZDOOM_CODE Accept another instance winning the directory creation race.
+		if (mkdir (path, S_IRUSR | S_IWUSR | S_IXUSR) == -1 &&
+			(errno != EEXIST || stat (path, &info) == -1 || !S_ISDIR(info.st_mode)))
 		{
 			I_FatalError ("Failed to create %s directory:\n%s",
 				path.GetChars(), strerror (errno));

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import sys
 from pathlib import Path
 
 import gymnasium as gym
@@ -234,6 +235,24 @@ def test_real_vector_step_and_masked_reset_preserve_other_lane() -> None:
         assert env._games[1].get_episode_time() == lane_one_time
     finally:
         env.close()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux user-directory path")
+def test_parallel_startup_tolerates_shared_user_directory_creation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    for attempt in range(8):
+        working_directory = tmp_path / str(attempt)
+        working_directory.mkdir()
+        monkeypatch.chdir(working_directory)
+        env = make_env()
+        try:
+            observations, _infos = env.reset(seed=attempt)
+            assert observations.shape == (2, 4, 32, 40)
+            assert (working_directory / "_vizdoom").is_dir()
+        finally:
+            env.close()
 
 
 def test_snapshot_restore_replays_identical_transition() -> None:

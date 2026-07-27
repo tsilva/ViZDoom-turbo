@@ -86,6 +86,7 @@ def test_custom_core_is_bundled_instead_of_a_runtime_dependency(
         for dependency in dependencies
     )
     assert metadata["build-system"]["build-backend"] == "build_backend"
+    assert "setuptools>=65" in metadata["dependency-groups"]["release"]
 
 
 def test_editable_build_keeps_staged_custom_core(

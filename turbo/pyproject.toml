@@ -65,6 +65,7 @@ dev = [
 release = [
   "cibuildwheel>=3.3,<4",
   "maturin>=1.8,<2",
+  "setuptools>=65",
   "twine>=6.2,<7",
 ]
 
