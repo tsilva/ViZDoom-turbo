@@ -11,9 +11,17 @@ Each vector lane owns an independent `DoomGame`. Lanes advance concurrently thro
 
 ## Install
 
+Install the published package from PyPI:
+
 ```bash
-git clone git@github.com:tsilva/ViZDoom-turbo-fork.git
-cd ViZDoom-turbo-fork/turbo
+uv add vizdoom-turbo
+```
+
+To work from source:
+
+```bash
+git clone git@github.com:tsilva/ViZDoom-turbo.git
+cd ViZDoom-turbo/turbo
 uv sync --all-extras
 ```
 
@@ -54,7 +62,27 @@ finally:
     env.close()
 ```
 
-The package accepts registered `Vizdoom...` Gymnasium IDs and ViZDoom `.cfg` paths. It also registers `...-Turbo-v0` vector aliases for the built-in visual scenarios.
+The package accepts canonical registered `Vizdoom...` Gymnasium IDs and
+ViZDoom `.cfg` paths.
+
+## Turbo Vector API v1
+
+`VizdoomTurboVecEnv` implements the strict Turbo Vector API v1:
+
+- `metadata["turbo_api_version"]` is `1`, and `metadata["render_modes"]`
+  advertises `rgb_array`.
+- Immutable `capabilities` and `signal_schema` declarations describe supported
+  features and the dtype, shape, and reset/step availability of every signal.
+- `buttons`, `action_mode`, `action_preset`, `action_table`,
+  `action_meanings`, and `action_table_hash` expose the resolved action
+  semantics without provider-specific probing.
+- `state_catalog` is an immutable ordered tuple. Callers select reset states
+  with an `int32` `state_indices` array and inspect the read-only active indices
+  with `active_state_indices()`; state sampling and lane routing remain
+  caller-owned.
+- `observation_ownership` and `observation_buffer_depth` declare the exact
+  lifetime of returned observations. `render_lane(index)` renders one lane,
+  `get_images()` renders all lanes, and `render()` renders lane zero.
 
 ## Use with rlab
 
