@@ -307,9 +307,7 @@ impl ImagePlan {
     {
         let pixel = &self.area_pixels[out_y * self.out_w + out_x];
         let mut sums = [0_u64; 3];
-        for sample in
-            &self.area_samples[pixel.sample_start as usize..pixel.sample_end as usize]
-        {
+        for sample in &self.area_samples[pixel.sample_start as usize..pixel.sample_end as usize] {
             let rgb = rgb_at(if sample.offset == MASKED_SAMPLE as u32 {
                 MASKED_SAMPLE
             } else {
@@ -380,8 +378,7 @@ impl ImagePlan {
         out_x: usize,
     ) -> [u8; 3] {
         let pixel = &self.area_pixels[out_y * self.out_w + out_x];
-        let samples =
-            &self.area_samples[pixel.sample_start as usize..pixel.sample_end as usize];
+        let samples = &self.area_samples[pixel.sample_start as usize..pixel.sample_end as usize];
         let mut packed_rgb = [0_u64; 4];
         let mut chunks = samples.chunks_exact(4);
         for chunk in &mut chunks {
@@ -390,16 +387,14 @@ impl ImagePlan {
                 let palette_index =
                     usize::from(unsafe { *current.get_unchecked(sample.offset as usize) });
                 let weight = u64::from(sample.weight / INDEXED_AREA_WEIGHT_QUANTUM);
-                packed_rgb[lane] +=
-                    unsafe { *palette_rgb.get_unchecked(palette_index) } * weight;
+                packed_rgb[lane] += unsafe { *palette_rgb.get_unchecked(palette_index) } * weight;
             }
         }
         for sample in chunks.remainder() {
             let palette_index =
                 usize::from(unsafe { *current.get_unchecked(sample.offset as usize) });
             let weight = u64::from(sample.weight / INDEXED_AREA_WEIGHT_QUANTUM);
-            packed_rgb[0] +=
-                unsafe { *palette_rgb.get_unchecked(palette_index) } * weight;
+            packed_rgb[0] += unsafe { *palette_rgb.get_unchecked(palette_index) } * weight;
         }
         let packed_rgb = packed_rgb.into_iter().sum::<u64>();
         let sums = [
@@ -522,12 +517,7 @@ impl ImagePlan {
         }
     }
 
-    fn write_indexed_frame(
-        &self,
-        current: &[u8],
-        palette: &[u8],
-        output: &mut [u8],
-    ) {
+    fn write_indexed_frame(&self, current: &[u8], palette: &[u8], output: &mut [u8]) {
         let mut palette_rgb = [0_u64; 256];
         for palette_index in 0..256 {
             let offset = palette_index * 3;
@@ -547,7 +537,6 @@ impl ImagePlan {
             }
         }
     }
-
 }
 
 #[derive(Clone, Copy)]
@@ -984,7 +973,9 @@ impl ImageProcessor {
             ));
         }
         if current.shape() != [self.plan.raw_h, self.plan.raw_w] {
-            return Err(PyValueError::new_err("current has an invalid indexed shape"));
+            return Err(PyValueError::new_err(
+                "current has an invalid indexed shape",
+            ));
         }
         if palette.shape() != [256, 3] {
             return Err(PyValueError::new_err("palette must have shape (256, 3)"));
@@ -1106,8 +1097,7 @@ impl ImageProcessor {
                     .zip(output_data.par_chunks_mut(output_lane_size))
                     .enumerate()
                     .for_each(|(lane, ((stack_lane, head), output_lane))| {
-                        let status =
-                            unsafe { step_lane(context as *mut c_void, lane) };
+                        let status = unsafe { step_lane(context as *mut c_void, lane) };
                         if status & 4 != 0 {
                             failed.store(true, Ordering::Relaxed);
                             return;
@@ -1119,9 +1109,8 @@ impl ImageProcessor {
                             let source = old_head * image_frame_size;
                             if source < destination {
                                 let (before, after) = stack_lane.split_at_mut(destination);
-                                after[..image_frame_size].copy_from_slice(
-                                    &before[source..source + image_frame_size],
-                                );
+                                after[..image_frame_size]
+                                    .copy_from_slice(&before[source..source + image_frame_size]);
                             } else if destination < source {
                                 let (before, after) = stack_lane.split_at_mut(source);
                                 before[destination..destination + image_frame_size]
@@ -1143,8 +1132,7 @@ impl ImageProcessor {
                             self.plan.write_indexed_frame(
                                 frame,
                                 palette,
-                                &mut stack_lane
-                                    [destination..destination + image_frame_size],
+                                &mut stack_lane[destination..destination + image_frame_size],
                             );
                         }
                         *head = new_head as i64;
@@ -1220,38 +1208,33 @@ impl ImageProcessor {
                     .zip(output_data.par_chunks_mut(output_lane_size))
                     .zip(mask_data.par_iter())
                     .enumerate()
-                    .for_each(
-                        |(lane, (((stack_lane, head), output_lane), selected))| {
-                            if !*selected {
-                                return;
-                            }
-                            let frame = unsafe {
-                                std::slice::from_raw_parts(
-                                    frame_lane(context as *mut c_void, lane),
-                                    self.plan.raw_h * self.plan.raw_w,
-                                )
-                            };
-                            let palette = unsafe {
-                                std::slice::from_raw_parts(
-                                    palette_lane(context as *mut c_void, lane),
-                                    256 * 3,
-                                )
-                            };
-                            self.plan.write_indexed_frame(
-                                frame,
-                                palette,
-                                &mut stack_lane[..image_frame_size],
-                            );
-                            for slot in 1..self.frame_stack {
-                                stack_lane.copy_within(
-                                    ..image_frame_size,
-                                    slot * image_frame_size,
-                                );
-                            }
-                            *head = 0;
-                            self.write_observation(stack_lane, 0, output_lane);
-                        },
-                    );
+                    .for_each(|(lane, (((stack_lane, head), output_lane), selected))| {
+                        if !*selected {
+                            return;
+                        }
+                        let frame = unsafe {
+                            std::slice::from_raw_parts(
+                                frame_lane(context as *mut c_void, lane),
+                                self.plan.raw_h * self.plan.raw_w,
+                            )
+                        };
+                        let palette = unsafe {
+                            std::slice::from_raw_parts(
+                                palette_lane(context as *mut c_void, lane),
+                                256 * 3,
+                            )
+                        };
+                        self.plan.write_indexed_frame(
+                            frame,
+                            palette,
+                            &mut stack_lane[..image_frame_size],
+                        );
+                        for slot in 1..self.frame_stack {
+                            stack_lane.copy_within(..image_frame_size, slot * image_frame_size);
+                        }
+                        *head = 0;
+                        self.write_observation(stack_lane, 0, output_lane);
+                    });
             });
         });
         Ok(())
@@ -1280,7 +1263,9 @@ impl ImageProcessor {
             ));
         }
         if current.shape() != [self.plan.raw_h, self.plan.raw_w] {
-            return Err(PyValueError::new_err("current has an invalid indexed shape"));
+            return Err(PyValueError::new_err(
+                "current has an invalid indexed shape",
+            ));
         }
         if palette.shape() != [256, 3] {
             return Err(PyValueError::new_err("palette must have shape (256, 3)"));
