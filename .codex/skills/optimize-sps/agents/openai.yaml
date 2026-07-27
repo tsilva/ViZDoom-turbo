@@ -1,0 +1,4 @@
+interface:
+  display_name: "Optimize ViZDoom SPS"
+  short_description: "Iteratively pursue a measured SPS multiplier"
+  default_prompt: "Use $optimize-sps to achieve a 1.5x SPS speedup on the exact RLab benchmark."
