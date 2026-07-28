@@ -1,0 +1,125 @@
+name: Turbo CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - turbo
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: turbo-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  PYTHON_VERSION: "3.14"
+  UV_CACHE_DIR: .uv-cache
+
+jobs:
+  validate:
+    name: Locked environment
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+
+      - name: Restore Cargo cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: turbo/target
+          key: turbo-ci-cargo-${{ runner.os }}-${{ hashFiles('turbo/Cargo.lock') }}
+          restore-keys: |
+            turbo-ci-cargo-${{ runner.os }}-
+
+      - name: Install ViZDoom build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libboost-all-dev libsdl2-dev libopenal-dev
+
+      - name: Install locked test environment
+        working-directory: turbo
+        run: uv sync --frozen --all-extras --group release
+
+      - name: Run source checks
+        working-directory: turbo
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-features
+          .venv/bin/python -m pytest -q
+          .venv/bin/python -m ruff check .
+
+  minimum-dependencies:
+    name: Minimum runtime dependencies
+    needs: validate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+
+      - name: Restore Cargo cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: turbo/target
+          key: turbo-ci-cargo-${{ runner.os }}-${{ hashFiles('turbo/Cargo.lock') }}
+          restore-keys: |
+            turbo-ci-cargo-${{ runner.os }}-
+
+      - name: Install ViZDoom build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libboost-all-dev libsdl2-dev libopenal-dev
+
+      - name: Install locked test environment
+        working-directory: turbo
+        run: uv sync --frozen --all-extras --group release
+
+      - name: Install minimum compatible runtime dependencies
+        working-directory: turbo
+        run: >-
+          uv pip install
+          --python .venv/bin/python
+          --upgrade
+          --resolution lowest-direct
+          --only-binary numpy
+          "gymnasium>=1.2,<2"
+          "numpy>=1.26,<3"
+
+      - name: Show resolved runtime versions
+        working-directory: turbo
+        run: >-
+          .venv/bin/python -c
+          "from importlib.metadata import version;
+          print('gymnasium=' + version('gymnasium'));
+          print('numpy=' + version('numpy'))"
+
+      - name: Run environment-contract and release tests
+        working-directory: turbo
+        run: >-
+          .venv/bin/python -m pytest -q
+          tests/test_env.py
+          tests/test_release_versioning.py
