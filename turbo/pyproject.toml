@@ -64,6 +64,7 @@ dev = [
 [dependency-groups]
 release = [
   "cibuildwheel>=3.3,<4",
+  "delocate>=0.13,<1",
   "maturin>=1.8,<2",
   "setuptools>=65",
   "twine>=6.2,<7",

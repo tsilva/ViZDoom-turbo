@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -276,8 +277,23 @@ def run_checks(skip_checks: bool, version: str) -> None:
     run(["cargo", "test", "--all-features"])
     run([str(PYTHON), "-m", "pytest", "-q"], env=env)
     run([str(PYTHON), "-m", "ruff", "check", "."], env=env)
-    run(["uv", "build", "--wheel"], env=env)
-    wheels = sorted((PACKAGE_ROOT / "dist").glob(f"vizdoom_turbo-{version}-*.whl"))
+    if sys.platform == "darwin":
+        arch = platform.machine()
+        if arch not in {"arm64", "x86_64"}:
+            raise SystemExit(f"unsupported local macOS architecture: {arch}")
+        release_platform = f"macos-{arch}"
+        helper(
+            "build-platform",
+            "--platform",
+            release_platform,
+            "--version",
+            version,
+        )
+        output = PACKAGE_ROOT / f"wheelhouse-v{version}-{release_platform}"
+    else:
+        run(["uv", "build", "--wheel"], env=env)
+        output = PACKAGE_ROOT / "dist"
+    wheels = sorted(output.glob(f"vizdoom_turbo-{version}-*.whl"))
     if len(wheels) != 1:
         raise SystemExit(f"expected one local release wheel, found {len(wheels)}")
     helper("smoke-wheel", str(wheels[0]), "--version", version)

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -233,11 +234,42 @@ def build_platform(args: argparse.Namespace) -> None:
                     "build",
                     "--release",
                     "--locked",
+                    "--interpreter",
+                    sys.executable,
                     "--out",
                     str(output),
                 ],
                 env=env,
             )
+            wheel = resolve_wheel(output)
+            with tempfile.TemporaryDirectory(
+                prefix="vizdoom-turbo-delocate-"
+            ) as directory:
+                repaired_output = Path(directory)
+                delocate_env = env.copy()
+                macos_version = platform.mac_ver()[0]
+                if not macos_version:
+                    raise SystemExit("could not determine the macOS runner version")
+                delocate_env["MACOSX_DEPLOYMENT_TARGET"] = (
+                    f"{macos_version.split('.', maxsplit=1)[0]}.0"
+                )
+                run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "delocate.cmd.delocate_wheel",
+                        "--require-archs",
+                        arch,
+                        "-w",
+                        str(repaired_output),
+                        "-v",
+                        str(wheel),
+                    ],
+                    env=delocate_env,
+                )
+                repaired_wheel = resolve_wheel(repaired_output)
+                wheel.unlink()
+                repaired_wheel.replace(output / repaired_wheel.name)
         finally:
             run([sys.executable, "scripts/stage_vizdoom_core.py", "clean"])
         return
@@ -294,9 +326,9 @@ def wheel_platform(wheel: Path) -> str | None:
         "linux-x86_64": ("manylinux", "x86_64"),
         "linux-aarch64": ("manylinux", "aarch64"),
     }
-    for platform, required in markers.items():
+    for platform_name, required in markers.items():
         if all(marker in wheel.name for marker in required):
-            return platform
+            return platform_name
     return None
 
 
@@ -345,6 +377,10 @@ def audit_wheel(wheel: Path, version: str) -> dict[str, object]:
         "has_custom_core_binary": any(
             name in {"vizdoom/vizdoom", "vizdoom/vizdoom.exe"}
             for name in names
+        ),
+        "macos_dependencies_vendored": (
+            wheel_platform(wheel) not in {"macos-arm64", "macos-x86_64"}
+            or any(".dylibs/" in name and name.endswith(".dylib") for name in names)
         ),
         "no_external_vizdoom_dependency": "Requires-Dist: vizdoom" not in metadata,
         "has_metadata": sum(name.endswith(".dist-info/METADATA") for name in names) == 1,
