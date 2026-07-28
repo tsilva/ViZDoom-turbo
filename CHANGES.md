@@ -4,6 +4,10 @@
 
 - Nothing yet.
 
+## 1.3.0.post9 - 2026-07-28
+
+- Vendor macOS wheel dependencies.
+
 ## 1.3.0.post8 - 2026-07-27
 
 - Harden release builds and parallel startup.
