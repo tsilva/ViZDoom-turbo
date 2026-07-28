@@ -68,12 +68,15 @@ namespace vizdoom {
 #define MSG_CODE_DOOM_CLOSE             12
 #define MSG_CODE_DOOM_ERROR             13
 #define MSG_CODE_DOOM_PROCESS_EXIT      14
+#define MSG_CODE_DOOM_BATCH_DONE        15
 
 #define MSG_CODE_TIC                    21
 #define MSG_CODE_UPDATE                 22
 #define MSG_CODE_TIC_AND_UPDATE         23
 #define MSG_CODE_COMMAND                24
 #define MSG_CODE_CLOSE                  25
+#define MSG_CODE_TICS                   27
+#define MSG_CODE_TICS_AND_UPDATE        28
 
 /* OSes */
 #ifdef __linux__
@@ -103,6 +106,9 @@ namespace vizdoom {
         bool isTicPossible();
         void tic(bool update = true);
         void tics(unsigned int tics, bool update = true);
+        void startTicsBatched(unsigned int tics, bool update = true);
+        void finishTicsBatched();
+        void ticsBatched(unsigned int tics, bool update = true);
         void restartMap(std::string demoPath = "");
         void respawnPlayer();
         bool isDoomRunning();
@@ -305,6 +311,8 @@ namespace vizdoom {
 
         bool doomRunning;
         bool doomWorking;
+        bool batchInFlight;
+        unsigned int lastBatchTicsMade;
 
         bool receiveMQMsg();
         void waitForDoomStart();

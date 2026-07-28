@@ -34,6 +34,9 @@ bip::message_queue *vizMQController = nullptr;
 bip::message_queue *vizMQDoom = nullptr;
 char *vizMQControllerName;
 char *vizMQDoomName;
+unsigned int vizPendingTics = 0;
+unsigned int vizBatchTicsMade = 0;
+bool vizBatchUpdate = false;
 
 void VIZ_MQInit(const char * id){
 
@@ -111,6 +114,16 @@ void VIZ_MQTic(){
 
             case VIZ_MSG_CODE_TIC_AND_UPDATE:
                 vizUpdate = true;
+                vizNextTic = true;
+                break;
+
+            case VIZ_MSG_CODE_TICS:
+            case VIZ_MSG_CODE_TICS_AND_UPDATE:
+                vizPendingTics = strtoul(msg.command, NULL, 10);
+                if (vizPendingTics == 0) vizPendingTics = 1;
+                vizBatchTicsMade = 0;
+                vizBatchUpdate = msg.code == VIZ_MSG_CODE_TICS_AND_UPDATE;
+                vizUpdate = vizBatchUpdate && vizPendingTics == 1;
                 vizNextTic = true;
                 break;
 

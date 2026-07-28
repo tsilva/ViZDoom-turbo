@@ -270,10 +270,29 @@ namespace vizdoom {
         DoomGame::respawnPlayer();
     }
 
-    void DoomGamePython::turboStepInto(
+    void DoomGamePython::turboStepStart(
         const double *action,
         size_t actionSize,
-        unsigned int tics,
+        unsigned int tics) {
+        if (!this->isRunning()) throw ViZDoomIsNotRunningException();
+        if (actionSize != this->availableButtons.size())
+            throw std::invalid_argument("action width does not match available buttons");
+
+        for (size_t index = 0; index < actionSize; ++index) {
+            this->nextAction[index] = action[index];
+            this->doomController->setButtonState(
+                this->availableButtons[index],
+                this->nextAction[index]);
+        }
+
+        this->turboTotalBefore = this->summaryReward;
+        this->turboStepAdvanced = this->doomController->isTicPossible();
+        if (this->turboStepAdvanced) {
+            this->doomController->startTicsBatched(tics, true);
+        }
+    }
+
+    void DoomGamePython::turboStepFinish(
         uint8_t *frame,
         size_t frameSize,
         uint8_t *palette,
@@ -284,9 +303,6 @@ namespace vizdoom {
         double *gameVariables,
         size_t gameVariablesSize,
         bool treatTimeoutAsTruncation) {
-        if (!this->isRunning()) throw ViZDoomIsNotRunningException();
-        if (actionSize != this->availableButtons.size())
-            throw std::invalid_argument("action width does not match available buttons");
         if (frame != nullptr && frameSize != this->doomController->getScreenSize())
             throw std::invalid_argument("frame size does not match the Doom screen");
         if (palette != nullptr && paletteSize != 256 * 3)
@@ -296,16 +312,8 @@ namespace vizdoom {
         if (gameVariablesSize != this->availableGameVariables.size())
             throw std::invalid_argument("game variable width does not match available variables");
 
-        for (size_t index = 0; index < actionSize; ++index) {
-            this->nextAction[index] = action[index];
-            this->doomController->setButtonState(
-                this->availableButtons[index],
-                this->nextAction[index]);
-        }
-
-        const double totalBefore = this->summaryReward;
-        if (this->doomController->isTicPossible()) {
-            this->doomController->tics(tics, true);
+        if (this->turboStepAdvanced) {
+            this->doomController->finishTicsBatched();
             if (this->doomController->isAllowDoomInput() ||
                 this->doomController->isReplaying()) {
                 for (size_t index = 0; index < this->availableButtons.size(); ++index) {
@@ -333,12 +341,40 @@ namespace vizdoom {
             std::memcpy(frame, screen, frameSize);
             std::memcpy(palette, this->doomController->getScreenPalette(), paletteSize);
         }
-        reward = static_cast<float>(this->summaryReward - totalBefore);
+        reward = static_cast<float>(this->summaryReward - this->turboTotalBefore);
 
         for (size_t index = 0; index < gameVariablesSize; ++index) {
             gameVariables[index] =
                 this->doomController->getGameVariable(this->availableGameVariables[index]);
         }
+    }
+
+    void DoomGamePython::turboStepInto(
+        const double *action,
+        size_t actionSize,
+        unsigned int tics,
+        uint8_t *frame,
+        size_t frameSize,
+        uint8_t *palette,
+        size_t paletteSize,
+        float &reward,
+        bool &terminated,
+        bool &truncated,
+        double *gameVariables,
+        size_t gameVariablesSize,
+        bool treatTimeoutAsTruncation) {
+        this->turboStepStart(action, actionSize, tics);
+        this->turboStepFinish(
+            frame,
+            frameSize,
+            palette,
+            paletteSize,
+            reward,
+            terminated,
+            truncated,
+            gameVariables,
+            gameVariablesSize,
+            treatTimeoutAsTruncation);
     }
 
     void DoomGamePython::turboReadIndexedInto(

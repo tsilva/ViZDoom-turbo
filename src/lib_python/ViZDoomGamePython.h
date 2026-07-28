@@ -138,8 +138,25 @@ namespace vizdoom {
         std::vector<pyb::ssize_t> grayShape;
         std::vector<pyb::ssize_t> audioShape;
         std::vector<pyb::ssize_t> variablesShape;
+        double turboTotalBefore;
+        bool turboStepAdvanced;
 
         void updateBuffersShapes();
+        void turboStepStart(
+            const double *action,
+            size_t actionSize,
+            unsigned int tics);
+        void turboStepFinish(
+            uint8_t *frame,
+            size_t frameSize,
+            uint8_t *palette,
+            size_t paletteSize,
+            float &reward,
+            bool &terminated,
+            bool &truncated,
+            double *gameVariables,
+            size_t gameVariablesSize,
+            bool treatTimeoutAsTruncation);
         void turboStepInto(
             const double *action,
             size_t actionSize,

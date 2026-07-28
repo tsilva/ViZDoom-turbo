@@ -1140,7 +1140,8 @@ void R_DrawSinglePlane (visplane_t *pl, fixed_t alpha, bool additive, bool maske
 		R_SetupSpanBits(tex);
 		pl->xscale = MulScale16 (pl->xscale, tex->xScale);
 		pl->yscale = MulScale16 (pl->yscale, tex->yScale);
-		ds_source = tex->GetPixels ();
+		//VIZDOOM_CODE
+		VIZ_SetSpanSource(tex->GetPixels(), !tex->bHasCanvas && !tex->bWarped);
 
 		basecolormap = pl->colormap;
 		planeshade = LIGHT2SHADE(pl->lightlevel);

@@ -128,6 +128,22 @@ impl ImagePlan {
                 }
             }
         }
+        let indexed_exact = raw_h == 240
+            && raw_w == 320
+            && out_h == 84
+            && out_w == 84
+            && !mask_crop
+            && crop == [0, 0, 0, 0];
+        let area_weight_quantum = if indexed_exact {
+            INDEXED_AREA_WEIGHT_QUANTUM
+        } else {
+            1
+        };
+        if area_weight_quantum > 1 {
+            for sample in &mut area_samples {
+                sample.weight /= area_weight_quantum;
+            }
+        }
         Self {
             raw_h,
             raw_w,
@@ -144,7 +160,7 @@ impl ImagePlan {
             nearest_x: Self::nearest_axis(source_w, out_w),
             linear_y: Self::linear_axis(source_h, out_h),
             linear_x: Self::linear_axis(source_w, out_w),
-            area_divisor: source_h as u64 * source_w as u64,
+            area_divisor: source_h as u64 * source_w as u64 / u64::from(area_weight_quantum),
             area_samples,
             area_pixels,
         }
@@ -386,15 +402,15 @@ impl ImagePlan {
                 let sample = unsafe { chunk.get_unchecked(lane) };
                 let palette_index =
                     usize::from(unsafe { *current.get_unchecked(sample.offset as usize) });
-                let weight = u64::from(sample.weight / INDEXED_AREA_WEIGHT_QUANTUM);
+                let weight = u64::from(sample.weight);
                 *packed += unsafe { *palette_rgb.get_unchecked(palette_index) } * weight;
             }
         }
-        for sample in chunks.remainder() {
+        for (lane, sample) in chunks.remainder().iter().enumerate() {
             let palette_index =
                 usize::from(unsafe { *current.get_unchecked(sample.offset as usize) });
-            let weight = u64::from(sample.weight / INDEXED_AREA_WEIGHT_QUANTUM);
-            packed_rgb[0] += unsafe { *palette_rgb.get_unchecked(palette_index) } * weight;
+            let weight = u64::from(sample.weight);
+            packed_rgb[lane] += unsafe { *palette_rgb.get_unchecked(palette_index) } * weight;
         }
         let packed_rgb = packed_rgb.into_iter().sum::<u64>();
         let sums = [
@@ -402,18 +418,24 @@ impl ImagePlan {
             (packed_rgb >> INDEXED_AREA_CHANNEL_BITS) & INDEXED_AREA_CHANNEL_MASK,
             packed_rgb >> (INDEXED_AREA_CHANNEL_BITS * 2),
         ];
-        let integer_result = [
-            ((sums[0] + INDEXED_AREA_DIVISOR / 2) / INDEXED_AREA_DIVISOR) as u8,
-            ((sums[1] + INDEXED_AREA_DIVISOR / 2) / INDEXED_AREA_DIVISOR) as u8,
-            ((sums[2] + INDEXED_AREA_DIVISOR / 2) / INDEXED_AREA_DIVISOR) as u8,
+        let adjusted = [
+            sums[0] + INDEXED_AREA_DIVISOR / 2,
+            sums[1] + INDEXED_AREA_DIVISOR / 2,
+            sums[2] + INDEXED_AREA_DIVISOR / 2,
         ];
-        if sums
+        let rounded = [
+            adjusted[0] / INDEXED_AREA_DIVISOR,
+            adjusted[1] / INDEXED_AREA_DIVISOR,
+            adjusted[2] / INDEXED_AREA_DIVISOR,
+        ];
+        if adjusted
             .iter()
-            .any(|sum| (sum % INDEXED_AREA_DIVISOR) * 2 == INDEXED_AREA_DIVISOR)
+            .zip(rounded)
+            .any(|(sum, value)| value * INDEXED_AREA_DIVISOR == *sum)
         {
             self.area_indexed_rgb_float(current, palette, out_y, out_x)
         } else {
-            integer_result
+            [rounded[0] as u8, rounded[1] as u8, rounded[2] as u8]
         }
     }
 
@@ -1028,7 +1050,8 @@ impl ImageProcessor {
         &self,
         py: Python<'_>,
         context: usize,
-        step_address: usize,
+        start_address: usize,
+        finish_address: usize,
         frame_address: usize,
         palette_address: usize,
         mut stack: PyReadwriteArray5<'_, u8>,
@@ -1078,7 +1101,8 @@ impl ImageProcessor {
 
         type StepLane = unsafe extern "C" fn(*mut c_void, usize) -> u32;
         type BufferLane = unsafe extern "C" fn(*mut c_void, usize) -> *const u8;
-        let step_lane: StepLane = unsafe { std::mem::transmute(step_address) };
+        let start_lane: StepLane = unsafe { std::mem::transmute(start_address) };
+        let finish_lane: StepLane = unsafe { std::mem::transmute(finish_address) };
         let frame_lane: BufferLane = unsafe { std::mem::transmute(frame_address) };
         let palette_lane: BufferLane = unsafe { std::mem::transmute(palette_address) };
         let stack_data = stack.as_slice_mut()?;
@@ -1090,14 +1114,24 @@ impl ImageProcessor {
         let failed = AtomicBool::new(false);
 
         py.detach(|| {
+            let started = (0..self.num_envs)
+                .map(|lane| unsafe { start_lane(context as *mut c_void, lane) } & 4 == 0)
+                .collect::<Vec<_>>();
+            if started.iter().any(|value| !*value) {
+                failed.store(true, Ordering::Relaxed);
+            }
             self.pool.install(|| {
                 stack_data
-                    .par_chunks_mut(stack_lane_size)
-                    .zip(heads_data.par_iter_mut())
-                    .zip(output_data.par_chunks_mut(output_lane_size))
+                    .chunks_mut(stack_lane_size)
+                    .zip(heads_data.iter_mut())
+                    .zip(output_data.chunks_mut(output_lane_size))
                     .enumerate()
+                    .par_bridge()
                     .for_each(|(lane, ((stack_lane, head), output_lane))| {
-                        let status = unsafe { step_lane(context as *mut c_void, lane) };
+                        if !started[lane] {
+                            return;
+                        }
+                        let status = unsafe { finish_lane(context as *mut c_void, lane) };
                         if status & 4 != 0 {
                             failed.store(true, Ordering::Relaxed);
                             return;

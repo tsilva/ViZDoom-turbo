@@ -11,6 +11,10 @@ import subprocess
 from pathlib import Path
 
 
+_SCALING_PROFILE = "scaling"
+_RLAB_PROFILE = "rlab-32x32"
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
@@ -38,6 +42,7 @@ def _run(
     benchmark: Path,
     *,
     label: str,
+    profile: str,
     num_envs: str,
     warmup_steps: int,
     measured_steps: int,
@@ -47,6 +52,8 @@ def _run(
         str(benchmark),
         "--label",
         label,
+        "--profile",
+        profile,
         "--num-envs",
         num_envs,
         "--warmup-steps",
@@ -70,6 +77,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-python", type=Path, required=True)
     parser.add_argument("--candidate-python", type=Path, required=True)
+    parser.add_argument(
+        "--profile",
+        choices=(_SCALING_PROFILE, _RLAB_PROFILE),
+        default=_SCALING_PROFILE,
+    )
     parser.add_argument("--num-envs", default="1,2,4,8,16")
     parser.add_argument("--pairs", type=_positive_int, default=7)
     parser.add_argument("--warmup-steps", type=_positive_int, default=40)
@@ -80,7 +92,9 @@ def main() -> int:
     paired: dict[str, list[dict[str, float]]] = {}
     provenance = {}
     for pair in range(args.pairs):
-        labels = ("baseline", "candidate") if pair % 2 == 0 else ("candidate", "baseline")
+        labels = (
+            ("baseline", "candidate") if pair % 2 == 0 else ("candidate", "baseline")
+        )
         results = {}
         for label in labels:
             python = (
@@ -90,6 +104,7 @@ def main() -> int:
                 python,
                 benchmark,
                 label=label,
+                profile=args.profile,
                 num_envs=args.num_envs,
                 warmup_steps=args.warmup_steps,
                 measured_steps=args.measured_steps,
@@ -118,11 +133,16 @@ def main() -> int:
         lower, upper = _bootstrap_median_ci(ratios)
         median_baseline = statistics.median(pair["baseline_sps"] for pair in pairs)
         median_candidate = statistics.median(pair["candidate_sps"] for pair in pairs)
+        baseline_vector_step_ms = 1000.0 * int(num_envs) / median_baseline
+        candidate_vector_step_ms = 1000.0 * int(num_envs) / median_candidate
         lane_passed = median_candidate > median_baseline
         passed &= lane_passed
         summary[num_envs] = {
             "baseline_median_sps": median_baseline,
             "candidate_median_sps": median_candidate,
+            "baseline_median_vector_step_ms": baseline_vector_step_ms,
+            "candidate_median_vector_step_ms": candidate_vector_step_ms,
+            "median_sps_ratio": median_candidate / median_baseline,
             "median_ratio": statistics.median(ratios),
             "bootstrap_95pct_median_ratio": [lower, upper],
             "candidate_faster": lane_passed,
@@ -136,6 +156,7 @@ def main() -> int:
                 "provenance": provenance,
                 "settings": {
                     "pairs": args.pairs,
+                    "profile": args.profile,
                     "num_envs": args.num_envs,
                     "warmup_steps": args.warmup_steps,
                     "measured_steps": args.measured_steps,

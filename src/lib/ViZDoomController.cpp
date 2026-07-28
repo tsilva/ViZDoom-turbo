@@ -31,6 +31,7 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/chrono.hpp>
 #include <boost/lexical_cast.hpp>
+#include <algorithm>
 #include <ctime>
 #include <random>
 
@@ -70,6 +71,8 @@ namespace vizdoom {
         /* Flow control */
         this->doomRunning = false;
         this->doomWorking = false;
+        this->batchInFlight = false;
+        this->lastBatchTicsMade = 0;
 
         this->mapStartTime = 1;
         this->mapTimeout = 0;
@@ -322,6 +325,67 @@ namespace vizdoom {
                 this->input->BT[i] = this->input->BT[i] / ticsMade;
             }
         }
+    }
+
+    void DoomController::startTicsBatched(unsigned int tics, bool update) {
+
+        if (!this->doomRunning) throw ViZDoomIsNotRunningException();
+        if (tics <= 1) {
+            throw std::invalid_argument("batched tics requires at least two tics");
+        }
+        if (!this->isTicPossible()) {
+            this->batchInFlight = false;
+            return;
+        }
+
+        if (this->allowDoomInput && !this->runDoomAsync) {
+            for (int i = 0; i < DELTA_BUTTON_COUNT; ++i) {
+                this->input->BT_MAX_VALUE[i] = tics * this->_input->BT_MAX_VALUE[i];
+            }
+        }
+
+        unsigned int requestedTics = tics;
+        if (this->mapTimeout > 0) {
+            const unsigned int timeoutTic = this->mapTimeout + this->mapStartTime;
+            if (this->gameState->MAP_TIC < timeoutTic) {
+                requestedTics = std::min(requestedTics, timeoutTic - this->gameState->MAP_TIC);
+            }
+        }
+
+        const std::string count = b::lexical_cast<std::string>(requestedTics);
+        this->lastBatchTicsMade = 0;
+        this->batchInFlight = true;
+        this->MQDoom->send(
+            update ? MSG_CODE_TICS_AND_UPDATE : MSG_CODE_TICS,
+            count.c_str());
+    }
+
+    void DoomController::finishTicsBatched() {
+
+        if (!this->batchInFlight) return;
+        this->waitForDoomWork();
+        this->batchInFlight = false;
+        this->mapLastTic += this->lastBatchTicsMade;
+
+        unsigned int ticsMade = this->lastBatchTicsMade;
+        if (ticsMade == 0) ticsMade = 1;
+        if (this->allowDoomInput && !this->runDoomAsync) {
+            for (int i = BINARY_BUTTON_COUNT; i < BUTTON_COUNT; ++i) {
+                this->input->BT_MAX_VALUE[i - BINARY_BUTTON_COUNT] =
+                    this->_input->BT_MAX_VALUE[i - BINARY_BUTTON_COUNT];
+                this->input->BT[i] = this->input->BT[i] / ticsMade;
+            }
+        }
+    }
+
+    void DoomController::ticsBatched(unsigned int tics, bool update) {
+
+        if (tics <= 1) {
+            this->tics(tics, update);
+            return;
+        }
+        this->startTicsBatched(tics, update);
+        this->finishTicsBatched();
     }
 
 
@@ -1200,6 +1264,12 @@ namespace vizdoom {
         Message msg = this->MQController->receive();
         switch (msg.code) {
             case MSG_CODE_DOOM_DONE :
+                done = true;
+                break;
+
+            case MSG_CODE_DOOM_BATCH_DONE :
+                this->lastBatchTicsMade =
+                    b::lexical_cast<unsigned int>(std::string(msg.command));
                 done = true;
                 break;
 

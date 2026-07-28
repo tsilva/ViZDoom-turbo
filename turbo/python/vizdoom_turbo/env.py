@@ -19,12 +19,14 @@ from typing import Any, Literal
 
 import gymnasium as gym
 import numpy as np
-import vizdoom as vzd
 from gymnasium.vector import AutoresetMode, VectorEnv
 from gymnasium.vector.utils import batch_space
 
+import vizdoom as vzd
+
 from ._vizdoom_turbo import ActionHistory, ImageProcessor
 from .action_tables import ActionTable, resolve_custom_action
+
 
 _DEFAULT_STATE = "default"
 _BUILTIN_SCENARIOS = {
@@ -165,7 +167,9 @@ def _normalize_pair(value: Any, name: str) -> tuple[int, int] | None:
         height, width = value
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name} must be a (height, width) pair") from exc
-    return _positive_int(height, f"{name} height"), _positive_int(width, f"{name} width")
+    return _positive_int(height, f"{name} height"), _positive_int(
+        width, f"{name} width"
+    )
 
 
 def _normalize_crop(value: Any) -> tuple[int, int, int, int]:
@@ -228,7 +232,9 @@ class _Scenario:
     doom_skill: int | None
 
 
-def _resolve_scenario(game: str | Path | None, scenario: str | Path | None) -> _Scenario:
+def _resolve_scenario(
+    game: str | Path | None, scenario: str | Path | None
+) -> _Scenario:
     requested = scenario if scenario not in (None, "scenario") else game
     if requested is None:
         requested = "VizdoomBasic-v1"
@@ -237,7 +243,9 @@ def _resolve_scenario(game: str | Path | None, scenario: str | Path | None) -> _
         return _Scenario(candidate.resolve(), None, None)
     alias = str(requested).strip().casefold().removesuffix(".cfg")
     if alias in _BUILTIN_SCENARIOS:
-        return _Scenario(Path(vzd.scenarios_path) / _BUILTIN_SCENARIOS[alias], None, None)
+        return _Scenario(
+            Path(vzd.scenarios_path) / _BUILTIN_SCENARIOS[alias], None, None
+        )
     try:
         import vizdoom.gymnasium_wrapper  # noqa: F401
 
@@ -250,7 +258,9 @@ def _resolve_scenario(game: str | Path | None, scenario: str | Path | None) -> _
         ) from exc
     config_name = spec.kwargs.get("scenario_config_file")
     if not config_name:
-        raise ValueError(f"Gymnasium environment {requested!r} is not a ViZDoom scenario")
+        raise ValueError(
+            f"Gymnasium environment {requested!r} is not a ViZDoom scenario"
+        )
     return _Scenario(
         Path(vzd.scenarios_path) / str(config_name),
         str(spec.kwargs["doom_map"]) if spec.kwargs.get("doom_map") else None,
@@ -345,7 +355,9 @@ class _LiveSnapshot:
         return self.action_history.nbytes + self.stack.nbytes + self.raw_frame.nbytes
 
     def __reduce__(self):
-        raise TypeError("live ViZDoom snapshots are session-local and cannot be pickled")
+        raise TypeError(
+            "live ViZDoom snapshots are session-local and cannot be pickled"
+        )
 
 
 class VizdoomTurboVecEnv(VectorEnv):
@@ -413,7 +425,9 @@ class VizdoomTurboVecEnv(VectorEnv):
         if unsupported:
             raise TypeError(f"unsupported option(s): {', '.join(sorted(unsupported))}")
         if info not in (None, "data"):
-            raise ValueError("info must be None/'data'; use game_variables for ViZDoom signals")
+            raise ValueError(
+                "info must be None/'data'; use game_variables for ViZDoom signals"
+            )
         if record:
             raise ValueError("record=True is unsupported on the native vector path")
         if players != 1:
@@ -477,7 +491,9 @@ class VizdoomTurboVecEnv(VectorEnv):
         self._owner = secrets.token_hex(16)
         self._scenario = _resolve_scenario(game, scenario)
         self._doom_map = doom_map or self._scenario.doom_map
-        self._doom_skill = int(doom_skill) if doom_skill is not None else self._scenario.doom_skill
+        self._doom_skill = (
+            int(doom_skill) if doom_skill is not None else self._scenario.doom_skill
+        )
         self._game_args = game_args
         self._rom_path = rom_path
         self._vizdoom_config = dict(vizdoom_config or {})
@@ -487,16 +503,13 @@ class VizdoomTurboVecEnv(VectorEnv):
         )
         self.state_catalog = tuple(asset.label for asset in self._assets)
         self._native_stepper_type = getattr(vzd, "_TurboBatchStepper", None)
-        native_stepper_available = (
-            self._native_stepper_type is not None
-            and all(
-                hasattr(self._native_stepper_type, name)
-                for name in (
-                    "indexed_frame_view",
-                    "native_api",
-                    "palette_view",
-                    "step_lane_into",
-                )
+        native_stepper_available = self._native_stepper_type is not None and all(
+            hasattr(self._native_stepper_type, name)
+            for name in (
+                "indexed_frame_view",
+                "native_api",
+                "palette_view",
+                "step_lane_into",
             )
         )
         native_processor_available = all(
@@ -530,7 +543,10 @@ class VizdoomTurboVecEnv(VectorEnv):
             self._button_enums = tuple(template.get_available_buttons())
             self.buttons = tuple(_enum_name(button) for button in self._button_enums)
             self._binary = np.asarray(
-                [int(button.value) < int(vzd.BINARY_BUTTON_COUNT) for button in self._button_enums],
+                [
+                    int(button.value) < int(vzd.BINARY_BUTTON_COUNT)
+                    for button in self._button_enums
+                ],
                 dtype=np.bool_,
             )
             self._game_variables = tuple(template.get_available_game_variables())
@@ -568,7 +584,9 @@ class VizdoomTurboVecEnv(VectorEnv):
         self.single_observation_space = gym.spaces.Box(
             0, 255, shape=single_shape, dtype=np.uint8
         )
-        self.observation_space = batch_space(self.single_observation_space, self.num_envs)
+        self.observation_space = batch_space(
+            self.single_observation_space, self.num_envs
+        )
         self._stack = np.zeros(
             (
                 self.num_envs,
@@ -600,9 +618,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         self._raw_frames = [
             self._raw_frame_batch[lane] for lane in range(self.num_envs)
         ]
-        self._previous_raw_batch = np.zeros(
-            (self.num_envs, *raw_shape), dtype=np.uint8
-        )
+        self._previous_raw_batch = np.zeros((self.num_envs, *raw_shape), dtype=np.uint8)
         self._previous_raw = [
             self._previous_raw_batch[lane] for lane in range(self.num_envs)
         ]
@@ -734,9 +750,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             self._native_indexed_frames = np.empty(
                 (self.num_envs, self.raw_height, self.raw_width), dtype=np.uint8
             )
-            self._native_palettes = np.empty(
-                (self.num_envs, 256, 3), dtype=np.uint8
-            )
+            self._native_palettes = np.empty((self.num_envs, 256, 3), dtype=np.uint8)
             self._native_stepper = self._native_stepper_type(
                 self._games,
                 self.frame_skip,
@@ -756,8 +770,7 @@ class VizdoomTurboVecEnv(VectorEnv):
                 for lane in range(self.num_envs)
             )
             self._native_palettes = tuple(
-                self._native_stepper.palette_view(lane)
-                for lane in range(self.num_envs)
+                self._native_stepper.palette_view(lane) for lane in range(self.num_envs)
             )
             self._native_api = self._native_stepper.native_api()
             self._native_stack_lanes = tuple(
@@ -779,10 +792,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         game = vzd.DoomGame()
         game.load_config(str(self._scenario.config_path))
         game.set_doom_config_path(
-            str(
-                Path(self._tempdir.name)
-                / f"engine-{secrets.token_hex(8)}.ini"
-            )
+            str(Path(self._tempdir.name) / f"engine-{secrets.token_hex(8)}.ini")
         )
         game.set_window_visible(False)
         game.set_sound_enabled(False)
@@ -845,7 +855,9 @@ class VizdoomTurboVecEnv(VectorEnv):
             return
         if np.any(~self._binary):
             binary_names = tuple(
-                name for name, binary in zip(self.buttons, self._binary, strict=True) if binary
+                name
+                for name, binary in zip(self.buttons, self._binary, strict=True)
+                if binary
             )
         else:
             binary_names = self.buttons
@@ -890,6 +902,24 @@ class VizdoomTurboVecEnv(VectorEnv):
         self._collect_game_variables = mode != "none" and any(
             key in self.game_variable_names for key in self._info_keys
         )
+        self._collect_episode_time = (
+            mode != "none" and "episode_time" in self._info_keys
+        )
+        self._collect_episode_return = (
+            mode != "none" and "episode_return" in self._info_keys
+        )
+        self._collect_player_dead = mode != "none" and "player_dead" in self._info_keys
+        self._collect_pending_reset = (
+            mode != "none" and "pending_reset" in self._info_keys
+        )
+        self._collect_derived_signals = any(
+            (
+                self._collect_episode_time,
+                self._collect_episode_return,
+                self._collect_player_dead,
+                self._collect_pending_reset,
+            )
+        )
 
     def _next_buffers(self):
         index = self._buffer_index
@@ -932,10 +962,14 @@ class VizdoomTurboVecEnv(VectorEnv):
             return
         width = len(self._game_variables)
         lane_game = self._games[lane]
-        self._signals[lane, width] = float(lane_game.get_episode_time())
-        self._signals[lane, width + 1] = self._episode_returns[lane]
-        self._signals[lane, width + 2] = float(lane_game.is_player_dead())
-        self._signals[lane, width + 3] = float(self._pending_reset[lane])
+        if self._collect_episode_time:
+            self._signals[lane, width] = float(lane_game.get_episode_time())
+        if self._collect_episode_return:
+            self._signals[lane, width + 1] = self._episode_returns[lane]
+        if self._collect_player_dead:
+            self._signals[lane, width + 2] = float(lane_game.is_player_dead())
+        if self._collect_pending_reset:
+            self._signals[lane, width + 3] = float(self._pending_reset[lane])
 
     def _infos(self, present: np.ndarray | None = None) -> dict[str, np.ndarray]:
         if self._info_mode == "none":
@@ -1024,7 +1058,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         self._seed_values = _normalize_seed(seed, self.num_envs)
         return list(self._seed_values)
 
-    def reset(
+    def reset(  # noqa: C901
         self,
         *,
         seed: int | Sequence[int | None] | None = None,
@@ -1039,7 +1073,9 @@ class VizdoomTurboVecEnv(VectorEnv):
         if not isinstance(mask, np.ndarray):
             raise TypeError("options['reset_mask'] must be a NumPy array")
         if mask.shape != (self.num_envs,):
-            raise ValueError(f"options['reset_mask'] must have shape ({self.num_envs},)")
+            raise ValueError(
+                f"options['reset_mask'] must have shape ({self.num_envs},)"
+            )
         if mask.dtype != np.bool_:
             raise TypeError("options['reset_mask'] must have dtype np.bool_")
         if not np.any(mask):
@@ -1068,7 +1104,9 @@ class VizdoomTurboVecEnv(VectorEnv):
             if not isinstance(value, _LiveSnapshot):
                 raise TypeError("snapshot values must come from capture_snapshots()")
             if value.owner != self._owner or value.config_hash != self._config_hash:
-                raise ValueError("snapshot belongs to a different environment instance/config")
+                raise ValueError(
+                    "snapshot belongs to a different environment instance/config"
+                )
 
         state_indices = reset_options.pop("state_indices", None)
         if state_indices is None:
@@ -1177,15 +1215,15 @@ class VizdoomTurboVecEnv(VectorEnv):
         self._active_state_indices.setflags(write=False)
         self._initialized[mask] = True
         self._pending_reset[mask] = False
-        if self._info_mode != "none":
+        if self._collect_derived_signals:
             for lane in np.flatnonzero(mask):
                 self._update_signal_row(int(lane))
         observations, _rewards, _terminated, _truncated = self._next_buffers()
         if self._native_stepper is not None:
             self._image_processor.reset_native_batch_into(
                 self._native_api[0],
-                self._native_api[2],
                 self._native_api[3],
+                self._native_api[4],
                 static_mask,
                 self._stack,
                 self._stack_heads,
@@ -1268,7 +1306,14 @@ class VizdoomTurboVecEnv(VectorEnv):
         timeout = bool(lane_game.is_episode_timeout_reached()) if finished else False
         truncated = finished and timeout and self.treat_episode_timeout_as_truncation
         terminated = finished and not truncated
-        return raw, previous, reward, terminated, truncated, self._raw_signals(lane_game)
+        return (
+            raw,
+            previous,
+            reward,
+            terminated,
+            truncated,
+            self._raw_signals(lane_game),
+        )
 
     def _step_native_lane(self, lane: int) -> None:
         self._native_stepper.step_lane_into(lane)
@@ -1362,7 +1407,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             )
         self._episode_returns += rewards
         np.logical_or(terminated, truncated, out=self._pending_reset)
-        if self._info_mode != "none":
+        if self._collect_derived_signals:
             for lane in range(self.num_envs):
                 self._update_signal_row(lane)
         return (

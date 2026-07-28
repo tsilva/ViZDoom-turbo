@@ -56,7 +56,11 @@ namespace vizdoom {
 
     private:
         void stepLaneNative(size_t lane);
+        void startLaneNative(size_t lane);
+        void finishLaneNative(size_t lane);
         static unsigned int nativeStepLane(void *context, size_t lane) noexcept;
+        static unsigned int nativeStartLane(void *context, size_t lane) noexcept;
+        static unsigned int nativeFinishLane(void *context, size_t lane) noexcept;
         static const uint8_t *nativeFrame(void *context, size_t lane) noexcept;
         static const uint8_t *nativePalette(void *context, size_t lane) noexcept;
 

@@ -159,6 +159,37 @@ void rt_map1col_c (int hx, int sx, int yl, int yh)
 	source = &dc_temp[yl*4 + hx];
 	pitch = dc_pitch;
 
+	//VIZDOOM_CODE
+	if (vizDepthMap == NULL && vizLabels == NULL)
+	{
+		if (count & 1)
+		{
+			*dest = colormap[*source];
+			source += 4;
+			dest += pitch;
+		}
+		if (count & 2)
+		{
+			dest[0] = colormap[source[0]];
+			dest[pitch] = colormap[source[4]];
+			source += 8;
+			dest += pitch*2;
+		}
+		if (!(count >>= 2))
+			return;
+
+		do
+		{
+			dest[0] = colormap[source[0]];
+			dest[pitch] = colormap[source[4]];
+			dest[pitch*2] = colormap[source[8]];
+			dest[pitch*3] = colormap[source[12]];
+			source += 16;
+			dest += pitch*4;
+		} while (--count);
+		return;
+	}
+
 	if (count & 1) {
 		*dest = colormap[*source];
 		source += 4;
@@ -202,6 +233,38 @@ void STACK_ARGS rt_map4cols_c (int sx, int yl, int yh)
 	dest = ylookup[yl] + sx + dc_destorg;
 	source = &dc_temp[yl*4];
 	pitch = dc_pitch;
+
+	//VIZDOOM_CODE
+	if (vizDepthMap == NULL && vizLabels == NULL)
+	{
+		if (count & 1)
+		{
+			dest[0] = colormap[source[0]];
+			dest[1] = colormap[source[1]];
+			dest[2] = colormap[source[2]];
+			dest[3] = colormap[source[3]];
+			source += 4;
+			dest += pitch;
+		}
+		if (!(count >>= 1))
+			return;
+
+		do
+		{
+			dest[0] = colormap[source[0]];
+			dest[1] = colormap[source[1]];
+			dest[2] = colormap[source[2]];
+			dest[3] = colormap[source[3]];
+			dest[pitch] = colormap[source[4]];
+			dest[pitch+1] = colormap[source[5]];
+			dest[pitch+2] = colormap[source[6]];
+			dest[pitch+3] = colormap[source[7]];
+			source += 8;
+			dest += pitch*2;
+		} while (--count);
+		return;
+	}
+
 	int y_mod=0;
 	if (count & 1) {
 		dest[0] = colormap[source[0]];

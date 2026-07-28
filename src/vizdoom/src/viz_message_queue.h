@@ -40,6 +40,7 @@ extern bip::message_queue *vizMQDoom;
 #define VIZ_MSG_CODE_DOOM_DONE 11
 #define VIZ_MSG_CODE_DOOM_CLOSE 12
 #define VIZ_MSG_CODE_DOOM_ERROR 13
+#define VIZ_MSG_CODE_DOOM_BATCH_DONE 15
 
 #define VIZ_MSG_CODE_TIC 21
 #define VIZ_MSG_CODE_UPDATE 22
@@ -47,6 +48,8 @@ extern bip::message_queue *vizMQDoom;
 #define VIZ_MSG_CODE_COMMAND 24
 #define VIZ_MSG_CODE_CLOSE 25
 #define VIZ_MSG_CODE_ERROR 26
+#define VIZ_MSG_CODE_TICS 27
+#define VIZ_MSG_CODE_TICS_AND_UPDATE 28
 
 
 struct VIZMessage{
@@ -63,5 +66,9 @@ bool VIZ_MQTryReceive(void *msg);
 void VIZ_MQTic();
 
 void VIZ_MQClose();
+
+extern unsigned int vizPendingTics;
+extern unsigned int vizBatchTicsMade;
+extern bool vizBatchUpdate;
 
 #endif

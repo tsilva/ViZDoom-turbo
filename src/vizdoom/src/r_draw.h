@@ -181,6 +181,8 @@ void	R_DrawTranslatedColumnP_C (void);
 void	R_DrawShadedColumnP_C (void);
 void	R_DrawSpanP_C (void);
 void	R_DrawSpanMaskedP_C (void);
+//VIZDOOM_CODE
+void	VIZ_SetSpanSource (const BYTE *pixels, bool cacheable);
 
 void	R_DrawSpanTranslucentP_C (void);
 void	R_DrawSpanMaskedTranslucentP_C (void);

@@ -135,11 +135,57 @@ namespace vizdoom {
             this->treatTimeoutAsTruncation);
     }
 
+    void TurboBatchStepper::startLaneNative(size_t lane) {
+        this->games[lane]->turboStepStart(
+            this->actionsData + lane * this->actionWidth,
+            this->actionWidth,
+            this->frameSkip);
+    }
+
+    void TurboBatchStepper::finishLaneNative(size_t lane) {
+        this->games[lane]->turboStepFinish(
+            nullptr,
+            0,
+            nullptr,
+            0,
+            this->rewardsData[lane],
+            this->terminatedData[lane],
+            this->truncatedData[lane],
+            this->gameVariablesData + lane * this->gameVariablesWidth,
+            this->gameVariablesWidth,
+            this->treatTimeoutAsTruncation);
+    }
+
     unsigned int TurboBatchStepper::nativeStepLane(void *context, size_t lane) noexcept {
         try {
             TurboBatchStepper *stepper = static_cast<TurboBatchStepper *>(context);
             if (lane >= stepper->games.size()) return 4;
             stepper->stepLaneNative(lane);
+            return (stepper->terminatedData[lane] ? 1u : 0u) |
+                (stepper->truncatedData[lane] ? 2u : 0u);
+        }
+        catch (...) {
+            return 4;
+        }
+    }
+
+    unsigned int TurboBatchStepper::nativeStartLane(void *context, size_t lane) noexcept {
+        try {
+            TurboBatchStepper *stepper = static_cast<TurboBatchStepper *>(context);
+            if (lane >= stepper->games.size()) return 4;
+            stepper->startLaneNative(lane);
+            return 0;
+        }
+        catch (...) {
+            return 4;
+        }
+    }
+
+    unsigned int TurboBatchStepper::nativeFinishLane(void *context, size_t lane) noexcept {
+        try {
+            TurboBatchStepper *stepper = static_cast<TurboBatchStepper *>(context);
+            if (lane >= stepper->games.size()) return 4;
+            stepper->finishLaneNative(lane);
             return (stepper->terminatedData[lane] ? 1u : 0u) |
                 (stepper->truncatedData[lane] ? 2u : 0u);
         }
@@ -191,7 +237,8 @@ namespace vizdoom {
     pyb::tuple TurboBatchStepper::nativeApi() {
         return pyb::make_tuple(
             reinterpret_cast<uintptr_t>(this),
-            reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeStepLane),
+            reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeStartLane),
+            reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeFinishLane),
             reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeFrame),
             reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativePalette));
     }

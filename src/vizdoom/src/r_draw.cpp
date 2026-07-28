@@ -25,6 +25,12 @@
 
 #include <stddef.h>
 
+//VIZDOOM_CODE
+#if defined(__SSE2__) || defined(_M_X64)
+#include <emmintrin.h>
+#define VIZ_SPAN_SSE2
+#endif
+
 #include "templates.h"
 #include "doomdef.h"
 #include "i_system.h"
@@ -47,6 +53,13 @@
 //VIZDOOM_CODE
 #include "viz_depth.h"
 #include "viz_labels.h"
+
+//VIZDOOM_CODE
+#if defined(__GNUC__)
+#define VIZ_HOT __attribute__((hot))
+#else
+#define VIZ_HOT
+#endif
 
 #undef RANGECHECK
 
@@ -1004,6 +1017,40 @@ int 					dscount;
 
 }
 
+//VIZDOOM_CODE
+struct VIZSpanPairCache
+{
+	const BYTE *source;
+	const BYTE *colormap;
+	BYTE mapped[64*64];
+};
+
+//VIZDOOM_CODE
+static VIZSpanPairCache vizSpanPairs[16];
+static bool vizSpanSourceCacheable;
+
+//VIZDOOM_CODE
+static inline const BYTE *VIZ_GetMappedSpanSource (const BYTE *source, const BYTE *colormap)
+{
+	size_t slot = (((size_t)source >> 6) ^ ((size_t)colormap >> 8)) & (countof(vizSpanPairs) - 1);
+	for (unsigned int probes = 0; probes < countof(vizSpanPairs); ++probes)
+	{
+		VIZSpanPairCache &entry = vizSpanPairs[slot];
+		if (entry.source == source && entry.colormap == colormap)
+			return entry.mapped;
+		if (entry.source == NULL)
+		{
+			entry.source = source;
+			entry.colormap = colormap;
+			for (unsigned int i = 0; i < countof(entry.mapped); ++i)
+				entry.mapped[i] = colormap[source[i]];
+			return entry.mapped;
+		}
+		slot = (slot + 1) & (countof(vizSpanPairs) - 1);
+	}
+	return NULL;
+}
+
 //==========================================================================
 //
 // R_SetSpanSource
@@ -1015,6 +1062,15 @@ int 					dscount;
 void R_SetSpanSource(const BYTE *pixels)
 {
 	ds_source = pixels;
+	//VIZDOOM_CODE
+	vizSpanSourceCacheable = false;
+}
+
+//VIZDOOM_CODE
+void VIZ_SetSpanSource(const BYTE *pixels, bool cacheable)
+{
+	ds_source = pixels;
+	vizSpanSourceCacheable = cacheable;
 }
 
 //==========================================================================
@@ -1056,7 +1112,7 @@ void R_SetupSpanBits(FTexture *tex)
 //
 // Draws the actual span.
 //VIZDOOM_CODE
-void R_DrawSpanP_C (void)
+void VIZ_HOT R_DrawSpanP_C (void)
 {
 	dsfixed_t			xfrac;
 	dsfixed_t			yfrac;
@@ -1088,6 +1144,126 @@ void R_DrawSpanP_C (void)
 
 	if (ds_xbits == 6 && ds_ybits == 6)
 	{
+		//VIZDOOM_CODE
+		if (vizDepthMap == NULL && vizLabels == NULL)
+		{
+			//VIZDOOM_CODE
+			if (vizSpanSourceCacheable)
+			{
+				const BYTE *mappedSource = VIZ_GetMappedSpanSource(source, colormap);
+				if (mappedSource != NULL)
+				{
+#ifdef VIZ_SPAN_SSE2
+					//VIZDOOM_CODE
+					if (count >= 4)
+					{
+						const dsfixed_t xfrac1 = xfrac + xstep;
+						const dsfixed_t xfrac2 = xfrac1 + xstep;
+						const dsfixed_t xfrac3 = xfrac2 + xstep;
+						const dsfixed_t yfrac1 = yfrac + ystep;
+						const dsfixed_t yfrac2 = yfrac1 + ystep;
+						const dsfixed_t yfrac3 = yfrac2 + ystep;
+						__m128i xfracs = _mm_setr_epi32((int)xfrac, (int)xfrac1, (int)xfrac2, (int)xfrac3);
+						__m128i yfracs = _mm_setr_epi32((int)yfrac, (int)yfrac1, (int)yfrac2, (int)yfrac3);
+						const __m128i xsteps = _mm_set1_epi32((int)(xstep*4));
+						const __m128i ysteps = _mm_set1_epi32((int)(ystep*4));
+						const __m128i xmask = _mm_set1_epi32(63*64);
+						while (count >= 8)
+						{
+							__m128i nextXfracs = _mm_add_epi32(xfracs, xsteps);
+							__m128i nextYfracs = _mm_add_epi32(yfracs, ysteps);
+							__m128i spots0 = _mm_or_si128(
+								_mm_and_si128(_mm_srli_epi32(xfracs, 32-6-6), xmask),
+								_mm_srli_epi32(yfracs, 32-6));
+							__m128i spots1 = _mm_or_si128(
+								_mm_and_si128(_mm_srli_epi32(nextXfracs, 32-6-6), xmask),
+								_mm_srli_epi32(nextYfracs, 32-6));
+							dest[0] = mappedSource[_mm_extract_epi16(spots0, 0)];
+							dest[1] = mappedSource[_mm_extract_epi16(spots0, 2)];
+							dest[2] = mappedSource[_mm_extract_epi16(spots0, 4)];
+							dest[3] = mappedSource[_mm_extract_epi16(spots0, 6)];
+							dest[4] = mappedSource[_mm_extract_epi16(spots1, 0)];
+							dest[5] = mappedSource[_mm_extract_epi16(spots1, 2)];
+							dest[6] = mappedSource[_mm_extract_epi16(spots1, 4)];
+							dest[7] = mappedSource[_mm_extract_epi16(spots1, 6)];
+							dest += 8;
+							xfracs = _mm_add_epi32(nextXfracs, xsteps);
+							yfracs = _mm_add_epi32(nextYfracs, ysteps);
+							count -= 8;
+						}
+						while (count >= 4)
+						{
+							__m128i spots = _mm_or_si128(
+								_mm_and_si128(_mm_srli_epi32(xfracs, 32-6-6), xmask),
+								_mm_srli_epi32(yfracs, 32-6));
+							dest[0] = mappedSource[_mm_extract_epi16(spots, 0)];
+							dest[1] = mappedSource[_mm_extract_epi16(spots, 2)];
+							dest[2] = mappedSource[_mm_extract_epi16(spots, 4)];
+							dest[3] = mappedSource[_mm_extract_epi16(spots, 6)];
+							dest += 4;
+							xfracs = _mm_add_epi32(xfracs, xsteps);
+							yfracs = _mm_add_epi32(yfracs, ysteps);
+							count -= 4;
+						}
+						xfrac = (dsfixed_t)_mm_cvtsi128_si32(xfracs);
+						yfrac = (dsfixed_t)_mm_cvtsi128_si32(yfracs);
+					}
+#else
+					while (count >= 4)
+					{
+						const dsfixed_t xfrac1 = xfrac + xstep;
+						const dsfixed_t xfrac2 = xfrac1 + xstep;
+						const dsfixed_t xfrac3 = xfrac2 + xstep;
+						const dsfixed_t yfrac1 = yfrac + ystep;
+						const dsfixed_t yfrac2 = yfrac1 + ystep;
+						const dsfixed_t yfrac3 = yfrac2 + ystep;
+						dest[0] = mappedSource[((xfrac >>(32-6-6))&(63*64)) + (yfrac >>(32-6))];
+						dest[1] = mappedSource[((xfrac1>>(32-6-6))&(63*64)) + (yfrac1>>(32-6))];
+						dest[2] = mappedSource[((xfrac2>>(32-6-6))&(63*64)) + (yfrac2>>(32-6))];
+						dest[3] = mappedSource[((xfrac3>>(32-6-6))&(63*64)) + (yfrac3>>(32-6))];
+						dest += 4;
+						xfrac = xfrac3 + xstep;
+						yfrac = yfrac3 + ystep;
+						count -= 4;
+					}
+#endif
+					while (count-- > 0)
+					{
+						spot = ((xfrac>>(32-6-6))&(63*64)) + (yfrac>>(32-6));
+						*dest++ = mappedSource[spot];
+						xfrac += xstep;
+						yfrac += ystep;
+					}
+					return;
+				}
+			}
+			while (count >= 4)
+			{
+				const dsfixed_t xfrac1 = xfrac + xstep;
+				const dsfixed_t xfrac2 = xfrac1 + xstep;
+				const dsfixed_t xfrac3 = xfrac2 + xstep;
+				const dsfixed_t yfrac1 = yfrac + ystep;
+				const dsfixed_t yfrac2 = yfrac1 + ystep;
+				const dsfixed_t yfrac3 = yfrac2 + ystep;
+				dest[0] = colormap[source[((xfrac >>(32-6-6))&(63*64)) + (yfrac >>(32-6))]];
+				dest[1] = colormap[source[((xfrac1>>(32-6-6))&(63*64)) + (yfrac1>>(32-6))]];
+				dest[2] = colormap[source[((xfrac2>>(32-6-6))&(63*64)) + (yfrac2>>(32-6))]];
+				dest[3] = colormap[source[((xfrac3>>(32-6-6))&(63*64)) + (yfrac3>>(32-6))]];
+				dest += 4;
+				xfrac = xfrac3 + xstep;
+				yfrac = yfrac3 + ystep;
+				count -= 4;
+			}
+			while (count-- > 0)
+			{
+				spot = ((xfrac>>(32-6-6))&(63*64)) + (yfrac>>(32-6));
+				*dest++ = colormap[source[spot]];
+				xfrac += xstep;
+				yfrac += ystep;
+			}
+			return;
+		}
+
 		// 64x64 is the most common case by far, so special case it.
 		do
 		{
@@ -1573,13 +1749,13 @@ extern "C" void STACK_ARGS R_DrawSlabC(int dx, fixed_t v, int dy, fixed_t vi, co
 
 // wallscan stuff, in C
 
-static DWORD STACK_ARGS vlinec1 ();
+static DWORD STACK_ARGS vlinec1 () VIZ_HOT;
 static int vlinebits;
 
 DWORD (STACK_ARGS *dovline1)() = vlinec1;
 DWORD (STACK_ARGS *doprevline1)() = vlinec1;
 
-static void STACK_ARGS vlinec4 ();
+static void STACK_ARGS vlinec4 () VIZ_HOT;
 void (STACK_ARGS *dovline4)() = vlinec4;
 
 static DWORD STACK_ARGS mvlinec1();
@@ -1605,6 +1781,18 @@ DWORD STACK_ARGS vlinec1 ()
 	int bits = vlinebits;
 	int pitch = dc_pitch;
 
+	//VIZDOOM_CODE
+	if (vizDepthMap == NULL)
+	{
+		do
+		{
+			*dest = colormap[source[frac>>bits]];
+			frac += fracstep;
+			dest += pitch;
+		} while (--count);
+		return frac;
+	}
+
 	do
 	{
 		*dest = colormap[source[frac>>bits]];
@@ -1621,16 +1809,80 @@ void STACK_ARGS vlinec4 ()
 	BYTE *dest = dc_dest;
 	int count = dc_count;
 	int bits = vlinebits;
-	DWORD place;
+	//VIZDOOM_CODE
+	const BYTE *source0 = bufplce[0], *source1 = bufplce[1];
+	const BYTE *source2 = bufplce[2], *source3 = bufplce[3];
+	const BYTE *lookup0 = palookupoffse[0], *lookup1 = palookupoffse[1];
+	const BYTE *lookup2 = palookupoffse[2], *lookup3 = palookupoffse[3];
+	const int pitch = dc_pitch;
 
-	do
+#ifdef VIZ_SPAN_SSE2
+	//VIZDOOM_CODE
+	if (bits >= 16)
 	{
-		dest[0] = palookupoffse[0][bufplce[0][(place=vplce[0])>>bits]]; vplce[0] = place+vince[0];
-		dest[1] = palookupoffse[1][bufplce[1][(place=vplce[1])>>bits]]; vplce[1] = place+vince[1];
-		dest[2] = palookupoffse[2][bufplce[2][(place=vplce[2])>>bits]]; vplce[2] = place+vince[2];
-		dest[3] = palookupoffse[3][bufplce[3][(place=vplce[3])>>bits]]; vplce[3] = place+vince[3];
-		dest += dc_pitch;
-	} while (--count);
+		__m128i places = _mm_loadu_si128((const __m128i *)vplce);
+		const __m128i steps = _mm_loadu_si128((const __m128i *)vince);
+		const __m128i shift = _mm_cvtsi32_si128(bits);
+		if (lookup0 == lookup1 && lookup0 == lookup2 && lookup0 == lookup3)
+		{
+			do
+			{
+				__m128i indices = _mm_srl_epi32(places, shift);
+				dest[0] = lookup0[source0[_mm_extract_epi16(indices, 0)]];
+				dest[1] = lookup0[source1[_mm_extract_epi16(indices, 2)]];
+				dest[2] = lookup0[source2[_mm_extract_epi16(indices, 4)]];
+				dest[3] = lookup0[source3[_mm_extract_epi16(indices, 6)]];
+				places = _mm_add_epi32(places, steps);
+				dest += pitch;
+			} while (--count);
+		}
+		else
+		{
+			do
+			{
+				__m128i indices = _mm_srl_epi32(places, shift);
+				dest[0] = lookup0[source0[_mm_extract_epi16(indices, 0)]];
+				dest[1] = lookup1[source1[_mm_extract_epi16(indices, 2)]];
+				dest[2] = lookup2[source2[_mm_extract_epi16(indices, 4)]];
+				dest[3] = lookup3[source3[_mm_extract_epi16(indices, 6)]];
+				places = _mm_add_epi32(places, steps);
+				dest += pitch;
+			} while (--count);
+		}
+		_mm_storeu_si128((__m128i *)vplce, places);
+		return;
+	}
+#endif
+
+	DWORD place0 = vplce[0], place1 = vplce[1], place2 = vplce[2], place3 = vplce[3];
+	const DWORD step0 = vince[0], step1 = vince[1], step2 = vince[2], step3 = vince[3];
+
+	//VIZDOOM_CODE
+	if (lookup0 == lookup1 && lookup0 == lookup2 && lookup0 == lookup3)
+	{
+		do
+		{
+			dest[0] = lookup0[source0[place0>>bits]];
+			dest[1] = lookup0[source1[place1>>bits]];
+			dest[2] = lookup0[source2[place2>>bits]];
+			dest[3] = lookup0[source3[place3>>bits]];
+			place0 += step0; place1 += step1; place2 += step2; place3 += step3;
+			dest += pitch;
+		} while (--count);
+	}
+	else
+	{
+		do
+		{
+			dest[0] = lookup0[source0[place0>>bits]];
+			dest[1] = lookup1[source1[place1>>bits]];
+			dest[2] = lookup2[source2[place2>>bits]];
+			dest[3] = lookup3[source3[place3>>bits]];
+			place0 += step0; place1 += step1; place2 += step2; place3 += step3;
+			dest += pitch;
+		} while (--count);
+	}
+	vplce[0] = place0; vplce[1] = place1; vplce[2] = place2; vplce[3] = place3;
 }
 
 void setupmvline (int fracbits)
@@ -2384,4 +2636,3 @@ bool R_GetTransMaskDrawers (fixed_t (**tmvline1)(), void (**tmvline4)())
 	}
 	return false;
 }
-

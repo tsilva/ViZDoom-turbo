@@ -218,6 +218,14 @@ void VIZ_AsyncStartTic(){
     }
 }
 
+static inline bool VIZ_BatchEnded(){
+    return gamestate != GS_LEVEL
+        || (!multiplayer
+            && (VIZ_PLAYER.mo == NULL
+                || VIZ_PLAYER.playerstate == PST_DEAD
+                || VIZ_PLAYER.mo->health <= 0));
+}
+
 void VIZ_Tic(){
 
     VIZ_DebugMsg(2, VIZ_FUNC, "tic: %d, vizTime: %d", gametic, vizTime);
@@ -242,7 +250,8 @@ void VIZ_Tic(){
 
     if (*viz_controlled){
         if(vizNextTic) {
-            VIZ_GameStateTic();
+            const bool batchEnded = vizPendingTics > 0 && VIZ_BatchEnded();
+            if (vizPendingTics <= 1 || batchEnded) VIZ_GameStateTic();
             if(vizUpdate) {
                 VIZ_Update();
             }
@@ -252,12 +261,30 @@ void VIZ_Tic(){
                 VIZ_AudioUpdate();
             }
 
-            VIZ_MQSend(VIZ_MSG_CODE_DOOM_DONE);
-            vizNextTic = false;
+            if (vizPendingTics > 0) ++vizBatchTicsMade;
+            if (vizPendingTics > 1 && !batchEnded) {
+                --vizPendingTics;
+                vizUpdate = vizBatchUpdate && vizPendingTics == 1;
+            }
+            else {
+                if (vizPendingTics > 1 && batchEnded && !vizUpdate) VIZ_Update();
+                if (vizPendingTics > 0) {
+                    char ticsMade[16];
+                    snprintf(ticsMade, sizeof(ticsMade), "%u", vizBatchTicsMade);
+                    VIZ_MQSend(VIZ_MSG_CODE_DOOM_BATCH_DONE, ticsMade);
+                }
+                else {
+                    VIZ_MQSend(VIZ_MSG_CODE_DOOM_DONE);
+                }
+                vizPendingTics = 0;
+                vizBatchTicsMade = 0;
+                vizBatchUpdate = false;
+                vizNextTic = false;
+            }
         }
 
         if(!*viz_async){
-            VIZ_MQTic();
+            if(!vizNextTic) VIZ_MQTic();
             VIZ_InputTic();
             ++vizTime;
         }
