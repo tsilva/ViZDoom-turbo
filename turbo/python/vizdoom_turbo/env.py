@@ -9,6 +9,7 @@ import math
 import operator
 import os
 import secrets
+import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -712,7 +713,11 @@ class VizdoomTurboVecEnv(VectorEnv):
         for lane, lane_game in enumerate(self._games):
             lane_game.set_seed(lane)
         try:
-            self._pool.run([(lane_game.init, ()) for lane_game in self._games])
+            if sys.platform == "darwin":
+                for lane_game in self._games:
+                    lane_game.init()
+            else:
+                self._pool.run([(lane_game.init, ()) for lane_game in self._games])
         except BaseException:
             self.close()
             raise
