@@ -4,6 +4,10 @@
 
 - Nothing yet.
 
+## 1.3.0.post13 - 2026-07-28
+
+- Add Turbo dependency validation CI.
+
 ## 1.3.0.post12 - 2026-07-28
 
 - +1.5x throughput improvement.
