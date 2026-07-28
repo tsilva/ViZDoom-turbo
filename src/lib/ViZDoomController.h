@@ -106,7 +106,11 @@ namespace vizdoom {
         bool isTicPossible();
         void tic(bool update = true);
         void tics(unsigned int tics, bool update = true);
-        void startTicsBatched(unsigned int tics, bool update = true);
+        //VIZDOOM_CODE
+        void startTicsBatched(
+            unsigned int tics,
+            bool update = true,
+            const std::string *fixedCount = nullptr);
         void finishTicsBatched();
         void ticsBatched(unsigned int tics, bool update = true);
         void restartMap(std::string demoPath = "");

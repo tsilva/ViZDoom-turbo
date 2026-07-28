@@ -19,12 +19,14 @@ from typing import Any, Literal
 
 import gymnasium as gym
 import numpy as np
-import vizdoom as vzd
 from gymnasium.vector import AutoresetMode, VectorEnv
 from gymnasium.vector.utils import batch_space
 
+import vizdoom as vzd
+
 from ._vizdoom_turbo import ActionHistory, ImageProcessor
 from .action_tables import ActionTable, resolve_custom_action
+
 
 _DEFAULT_STATE = "default"
 _BUILTIN_SCENARIOS = {
@@ -637,6 +639,8 @@ class VizdoomTurboVecEnv(VectorEnv):
         self._buffer_index = 0
         self._initialized = np.zeros(self.num_envs, dtype=np.bool_)
         self._pending_reset = np.zeros(self.num_envs, dtype=np.bool_)
+        self._all_initialized = False
+        self._has_pending_reset = False
         self._active_state_indices = np.full(
             self.num_envs, self._default_state_index, dtype=np.int32
         )
@@ -663,6 +667,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         self._signals = np.zeros(
             (self.num_envs, len(self._signal_names)), dtype=np.float64
         )
+        self._all_info_present = np.ones(self.num_envs, dtype=np.bool_)
         self._configure_info_filter(info_filter)
         self.signal_schema = MappingProxyType(
             {
@@ -745,6 +750,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             self._native_game_variables = np.empty(
                 (self.num_envs, len(self._game_variables)), dtype=np.float64
             )
+            self._native_reset_seeds = np.zeros(self.num_envs, dtype=np.uint32)
             self._native_indexed_frames = np.empty(
                 (self.num_envs, self.raw_height, self.raw_width), dtype=np.uint8
             )
@@ -770,7 +776,9 @@ class VizdoomTurboVecEnv(VectorEnv):
             self._native_palettes = tuple(
                 self._native_stepper.palette_view(lane) for lane in range(self.num_envs)
             )
-            self._native_api = self._native_stepper.native_api()
+            native_api = self._native_stepper.native_api()
+            self._native_api = native_api[:5]
+            self._native_reset_api = native_api[5] if len(native_api) >= 6 else None
             self._native_stack_lanes = tuple(
                 self._stack[lane] for lane in range(self.num_envs)
             )
@@ -973,7 +981,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         if self._info_mode == "none":
             return {}
         if present is None:
-            present = np.ones(self.num_envs, dtype=np.bool_)
+            present = self._all_info_present
         if self._info_mode == "terminal":
             present = present & self._pending_reset
         result: dict[str, np.ndarray] = {}
@@ -1121,6 +1129,8 @@ class VizdoomTurboVecEnv(VectorEnv):
         if state_indices.dtype != np.int32:
             raise TypeError("options['state_indices'] must have dtype np.int32")
         static_mask = mask & ~snapshot_mask
+        static_lanes = np.flatnonzero(static_mask)
+        reset_lane_values = np.flatnonzero(mask)
         selected = state_indices[static_mask]
         if np.any(selected < 0) or np.any(selected >= len(self.state_catalog)):
             raise ValueError("selected state_indices entries must index state_catalog")
@@ -1138,7 +1148,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             raise ValueError("snapshot reset lanes cannot also specify a seed")
         noop_counts = np.zeros(self.num_envs, dtype=np.int64)
         game_seeds: list[int | None] = [None] * self.num_envs
-        for lane in np.flatnonzero(static_mask):
+        for lane in static_lanes:
             lane_seed = seeds[lane]
             if lane_seed is not None:
                 self._rngs[lane] = np.random.default_rng(lane_seed)
@@ -1153,39 +1163,53 @@ class VizdoomTurboVecEnv(VectorEnv):
                 noop_counts[lane] = self._rngs[lane].integers(
                     1, self.noop_reset_max + 1
                 )
-        reset_lanes = []
-        reset_jobs = []
-        for lane in np.flatnonzero(mask):
-            lane_index = int(lane)
-            snapshot = snapshot_values[lane_index]
-            asset = (
-                None
-                if snapshot is not None
-                else self._assets[int(state_indices[lane_index])]
+        native_static_reset = (
+            self._native_stepper is not None
+            and self._native_reset_api is not None
+            and not np.any(snapshot_mask)
+            and not np.any(noop_counts[static_mask])
+            and all(
+                self._assets[int(state_indices[lane])].payload is None
+                for lane in static_lanes
             )
-            reset_lanes.append(lane_index)
-            reset_jobs.append(
-                (
-                    self._reset_lane,
-                    (
-                        lane_index,
-                        game_seeds[lane_index],
-                        asset,
-                        snapshot,
-                        int(noop_counts[lane_index]),
-                    ),
+        )
+        if native_static_reset:
+            for lane in static_lanes:
+                self._native_reset_seeds[lane] = game_seeds[lane]
+        else:
+            reset_lanes = []
+            reset_jobs = []
+            for lane in reset_lane_values:
+                lane_index = int(lane)
+                snapshot = snapshot_values[lane_index]
+                asset = (
+                    None
+                    if snapshot is not None
+                    else self._assets[int(state_indices[lane_index])]
                 )
-            )
-        for lane, (raw, raw_signals) in zip(
-            reset_lanes, self._pool.run(reset_jobs), strict=True
-        ):
-            self._raw_frames[lane][...] = raw
-            if raw_signals is not None:
-                width = len(self._game_variables)
-                self._signals[lane, :width] = raw_signals
+                reset_lanes.append(lane_index)
+                reset_jobs.append(
+                    (
+                        self._reset_lane,
+                        (
+                            lane_index,
+                            game_seeds[lane_index],
+                            asset,
+                            snapshot,
+                            int(noop_counts[lane_index]),
+                        ),
+                    )
+                )
+            for lane, (raw, raw_signals) in zip(
+                reset_lanes, self._pool.run(reset_jobs), strict=True
+            ):
+                self._raw_frames[lane][...] = raw
+                if raw_signals is not None:
+                    width = len(self._game_variables)
+                    self._signals[lane, :width] = raw_signals
         self._active_state_indices.setflags(write=True)
         self._action_history.clear(static_mask)
-        for lane in np.flatnonzero(mask):
+        for lane in reset_lane_values:
             lane_index = int(lane)
             snapshot = snapshot_values[lane_index]
             if snapshot is None:
@@ -1213,27 +1237,38 @@ class VizdoomTurboVecEnv(VectorEnv):
         self._active_state_indices.setflags(write=False)
         self._initialized[mask] = True
         self._pending_reset[mask] = False
-        if self._collect_derived_signals:
-            for lane in np.flatnonzero(mask):
-                self._update_signal_row(int(lane))
+        if not self._all_initialized:
+            self._all_initialized = bool(np.all(self._initialized))
+        self._has_pending_reset = bool(np.any(self._pending_reset))
         observations, _rewards, _terminated, _truncated = self._next_buffers()
         if self._native_stepper is not None:
-            self._image_processor.reset_native_batch_into(
-                self._native_api[0],
-                self._native_api[3],
-                self._native_api[4],
-                static_mask,
-                self._stack,
-                self._stack_heads,
-                observations,
-            )
-            self._image_processor.reset_frames_into(
-                self._raw_frames,
-                self._stack,
-                self._stack_heads,
-                observations,
-                np.zeros(self.num_envs, dtype=np.bool_),
-            )
+            if native_static_reset:
+                self._image_processor.reset_native_batch_into(
+                    self._native_api[0],
+                    self._native_api[3],
+                    self._native_api[4],
+                    static_mask,
+                    self._stack,
+                    self._stack_heads,
+                    observations,
+                    self._native_reset_api,
+                    self._native_reset_seeds,
+                )
+                if self._collect_game_variables:
+                    width = len(self._game_variables)
+                    self._signals[static_mask, :width] = self._native_game_variables[
+                        static_mask, :width
+                    ]
+            else:
+                self._image_processor.reset_native_batch_into(
+                    self._native_api[0],
+                    self._native_api[3],
+                    self._native_api[4],
+                    static_mask,
+                    self._stack,
+                    self._stack_heads,
+                    observations,
+                )
         else:
             self._image_processor.reset_frames_into(
                 self._raw_frames,
@@ -1242,6 +1277,9 @@ class VizdoomTurboVecEnv(VectorEnv):
                 observations,
                 static_mask,
             )
+        if self._collect_derived_signals:
+            for lane in reset_lane_values:
+                self._update_signal_row(int(lane))
         infos = self._infos(mask.copy())
         infos["state_index"] = self._active_state_indices.copy()
         infos["_state_index"] = mask.copy()
@@ -1255,14 +1293,28 @@ class VizdoomTurboVecEnv(VectorEnv):
         self._options = [None] * self.num_envs
         return self._returned_obs(observations), infos
 
-    def _native_actions(self, actions: Any) -> np.ndarray:
+    def _native_actions(
+        self,
+        actions: Any,
+        out: np.ndarray | None = None,
+    ) -> np.ndarray:
         if self._custom_actions is not None:
             values = np.asarray(actions, dtype=np.int64).reshape(-1)
             if values.shape != (self.num_envs,):
                 raise ValueError(f"actions must have shape ({self.num_envs},)")
-            if values.size and (
-                int(values.min()) < 0 or int(values.max()) >= len(self._custom_actions)
-            ):
+            if values.size and int(values.min()) < 0:
+                raise ValueError(
+                    f"actions must be in [0, {len(self._custom_actions) - 1}]"
+                )
+            if out is not None:
+                try:
+                    np.take(self._custom_actions, values, axis=0, out=out)
+                except IndexError as error:
+                    raise ValueError(
+                        f"actions must be in [0, {len(self._custom_actions) - 1}]"
+                    ) from error
+                return out
+            if values.size and int(values.max()) >= len(self._custom_actions):
                 raise ValueError(
                     f"actions must be in [0, {len(self._custom_actions) - 1}]"
                 )
@@ -1339,13 +1391,18 @@ class VizdoomTurboVecEnv(VectorEnv):
     def step(self, actions: Any):
         if self.closed:
             raise RuntimeError("cannot step a closed environment")
-        if not np.all(self._initialized):
+        if not self._all_initialized:
             raise RuntimeError("all lanes must be reset before the first step")
-        if np.any(self._pending_reset):
+        if self._has_pending_reset:
             lanes = np.flatnonzero(self._pending_reset).tolist()
             raise RuntimeError(f"terminal lanes must be reset before step: {lanes}")
-        requested = self._native_actions(actions)
-        applied = requested.copy()
+        direct_native_actions = (
+            self._native_actions_buffer
+            if self._native_stepper is not None and not self.sticky_action_prob
+            else None
+        )
+        requested = self._native_actions(actions, direct_native_actions)
+        applied = requested if direct_native_actions is not None else requested.copy()
         if self.sticky_action_prob:
             for lane in range(self.num_envs):
                 if self._rngs[lane].random() < self.sticky_action_prob:
@@ -1356,8 +1413,9 @@ class VizdoomTurboVecEnv(VectorEnv):
             self._last_actions[:] = requested
         observations, rewards, terminated, truncated = self._next_buffers()
         if self._native_stepper is not None:
-            self._native_actions_buffer[...] = applied
-            self._image_processor.step_native_batch_into(
+            if applied is not self._native_actions_buffer:
+                self._native_actions_buffer[...] = applied
+            self._has_pending_reset = self._image_processor.step_native_batch_into(
                 *self._native_api,
                 self._stack,
                 self._stack_heads,
@@ -1405,6 +1463,8 @@ class VizdoomTurboVecEnv(VectorEnv):
             )
         self._episode_returns += rewards
         np.logical_or(terminated, truncated, out=self._pending_reset)
+        if self._native_stepper is None:
+            self._has_pending_reset = bool(np.any(self._pending_reset))
         if self._collect_derived_signals:
             for lane in range(self.num_envs):
                 self._update_signal_row(lane)

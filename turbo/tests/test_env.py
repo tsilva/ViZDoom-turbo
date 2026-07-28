@@ -7,9 +7,11 @@ from pathlib import Path
 import gymnasium as gym
 import numpy as np
 import pytest
-import vizdoom as vzd
 from gymnasium.vector import AutoresetMode
 from vizdoom_turbo import VizDoomTurboVecEnv, VizdoomTurboVecEnv, scenario_buttons
+
+import vizdoom as vzd
+
 
 SUPPORTED_SCENARIOS = (
     "basic",
@@ -78,7 +80,9 @@ def make_exact_env(**overrides) -> VizdoomTurboVecEnv:
     return VizdoomTurboVecEnv(**options)
 
 
-def assert_info_equal(actual: dict[str, np.ndarray], expected: dict[str, np.ndarray]) -> None:
+def assert_info_equal(
+    actual: dict[str, np.ndarray], expected: dict[str, np.ndarray]
+) -> None:
     assert actual.keys() == expected.keys()
     for key in actual:
         np.testing.assert_array_equal(actual[key], expected[key], err_msg=key)
@@ -163,11 +167,7 @@ def test_legacy_reset_selector_names_are_rejected() -> None:
     env = make_env()
     try:
         with pytest.raises(ValueError, match="unsupported reset options"):
-            env.reset(
-                options={
-                    "start_indices": np.zeros(env.num_envs, dtype=np.int32)
-                }
-            )
+            env.reset(options={"start_indices": np.zeros(env.num_envs, dtype=np.int32)})
         with pytest.raises(ValueError, match="unsupported reset options"):
             env.reset(options={"start_ids": np.full(env.num_envs, "default")})
     finally:
@@ -342,6 +342,9 @@ def test_custom_action_table_is_exact_and_hashed() -> None:
             env._native_actions(np.asarray([1, 2])),
             [[1, 0, 0], [0, 1, 1]],
         )
+        out = np.empty((2, 3), dtype=np.float64)
+        assert env._native_actions(np.asarray([2, 1]), out=out) is out
+        np.testing.assert_array_equal(out, [[0, 1, 1], [1, 0, 0]])
     finally:
         env.close()
 

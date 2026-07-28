@@ -140,6 +140,8 @@ namespace vizdoom {
         std::vector<pyb::ssize_t> variablesShape;
         double turboTotalBefore;
         bool turboStepAdvanced;
+        unsigned int turboTics;
+        std::string turboTicsCount;
 
         void updateBuffersShapes();
         void turboStepStart(
@@ -171,6 +173,10 @@ namespace vizdoom {
             double *gameVariables,
             size_t gameVariablesSize,
             bool treatTimeoutAsTruncation);
+        void turboReset(
+            unsigned int seed,
+            double *gameVariables,
+            size_t gameVariablesSize);
         void turboReadIndexedInto(
             uint8_t *frame,
             size_t frameSize,

@@ -6,7 +6,9 @@ use pyo3::exceptions::{PyIndexError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
+use std::collections::HashMap;
 use std::ffi::c_void;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Copy)]
@@ -34,7 +36,14 @@ const INDEXED_AREA_DIVISOR: u64 = 1_600;
 const INDEXED_AREA_WEIGHT_QUANTUM: u32 = 48;
 const INDEXED_AREA_CHANNEL_BITS: u32 = 20;
 const INDEXED_AREA_CHANNEL_MASK: u64 = (1 << INDEXED_AREA_CHANNEL_BITS) - 1;
+const INDEXED_HISTORY_CAPACITY: usize = 16;
+const INDEXED_TILE_SIZE: usize = 16;
+const INDEXED_TILE_SAMPLES: usize = 32;
+const INDEXED_TILE_COLUMNS: usize = 84_usize.div_ceil(INDEXED_TILE_SIZE);
+const INDEXED_TILE_ROWS: usize = 84_usize.div_ceil(INDEXED_TILE_SIZE);
+const INDEXED_TILE_COUNT: usize = INDEXED_TILE_COLUMNS * INDEXED_TILE_ROWS;
 
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 struct AreaSample {
     offset: u32,
     weight: u32,
@@ -43,6 +52,24 @@ struct AreaSample {
 struct AreaPixel {
     sample_start: u32,
     sample_end: u32,
+}
+
+struct IndexedAreaPixel {
+    base_offset: u32,
+    sample_start: u16,
+    sample_end: u16,
+}
+
+struct IndexedTile {
+    source_y_start: usize,
+    source_y_end: usize,
+    source_x_start: usize,
+    source_x_end: usize,
+    output_y_start: usize,
+    output_y_end: usize,
+    output_x_start: usize,
+    output_x_end: usize,
+    fingerprint_offsets: [u32; INDEXED_TILE_SAMPLES],
 }
 
 struct ImagePlan {
@@ -64,6 +91,9 @@ struct ImagePlan {
     area_divisor: u64,
     area_samples: Vec<AreaSample>,
     area_pixels: Vec<AreaPixel>,
+    indexed_area_samples: Vec<AreaSample>,
+    indexed_area_pixels: Vec<IndexedAreaPixel>,
+    indexed_tiles: Vec<IndexedTile>,
 }
 
 impl ImagePlan {
@@ -144,6 +174,74 @@ impl ImagePlan {
                 sample.weight /= area_weight_quantum;
             }
         }
+        let (indexed_area_samples, indexed_area_pixels) = if indexed_exact {
+            let mut indexed_samples = Vec::new();
+            let mut indexed_pixels = Vec::with_capacity(area_pixels.len());
+            let mut patterns = HashMap::<Vec<AreaSample>, (u16, u16)>::new();
+            for pixel in &area_pixels {
+                let samples = &area_samples[pixel.sample_start as usize..pixel.sample_end as usize];
+                let base_offset = samples[0].offset;
+                let pattern = samples
+                    .iter()
+                    .map(|sample| AreaSample {
+                        offset: sample.offset - base_offset,
+                        weight: sample.weight,
+                    })
+                    .collect::<Vec<_>>();
+                let (sample_start, sample_end) =
+                    *patterns.entry(pattern.clone()).or_insert_with(|| {
+                        let sample_start = indexed_samples.len() as u16;
+                        indexed_samples.extend(pattern);
+                        (sample_start, indexed_samples.len() as u16)
+                    });
+                indexed_pixels.push(IndexedAreaPixel {
+                    base_offset,
+                    sample_start,
+                    sample_end,
+                });
+            }
+            (indexed_samples, indexed_pixels)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let indexed_tiles = if indexed_exact {
+            (0..INDEXED_TILE_COUNT)
+                .map(|tile| {
+                    let tile_y = tile / INDEXED_TILE_COLUMNS;
+                    let tile_x = tile % INDEXED_TILE_COLUMNS;
+                    let output_y_start = tile_y * INDEXED_TILE_SIZE;
+                    let output_y_end = ((tile_y + 1) * INDEXED_TILE_SIZE).min(out_h);
+                    let output_x_start = tile_x * INDEXED_TILE_SIZE;
+                    let output_x_end = ((tile_x + 1) * INDEXED_TILE_SIZE).min(out_w);
+                    let source_y_start = output_y_start * source_h / out_h;
+                    let source_y_end = (output_y_end * source_h).div_ceil(out_h);
+                    let source_x_start = output_x_start * source_w / out_w;
+                    let source_x_end = (output_x_end * source_w).div_ceil(out_w);
+                    let width = source_x_end - source_x_start;
+                    let area = (source_y_end - source_y_start) * width;
+                    let mut fingerprint_offsets = [0; INDEXED_TILE_SAMPLES];
+                    for (sample, offset) in fingerprint_offsets.iter_mut().enumerate() {
+                        let position = sample * area / INDEXED_TILE_SAMPLES;
+                        *offset = ((source_y_start + position / width) * raw_w
+                            + source_x_start
+                            + position % width) as u32;
+                    }
+                    IndexedTile {
+                        source_y_start,
+                        source_y_end,
+                        source_x_start,
+                        source_x_end,
+                        output_y_start,
+                        output_y_end,
+                        output_x_start,
+                        output_x_end,
+                        fingerprint_offsets,
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         Self {
             raw_h,
             raw_w,
@@ -163,6 +261,9 @@ impl ImagePlan {
             area_divisor: source_h as u64 * source_w as u64 / u64::from(area_weight_quantum),
             area_samples,
             area_pixels,
+            indexed_area_samples,
+            indexed_area_pixels,
+            indexed_tiles,
         }
     }
 
@@ -393,26 +494,56 @@ impl ImagePlan {
         out_y: usize,
         out_x: usize,
     ) -> [u8; 3] {
-        let pixel = &self.area_pixels[out_y * self.out_w + out_x];
-        let samples = &self.area_samples[pixel.sample_start as usize..pixel.sample_end as usize];
+        self.area_indexed_rgb_from_packed(
+            current,
+            palette,
+            out_y,
+            out_x,
+            self.area_indexed_packed_rgb(current, palette_rgb, out_y, out_x),
+        )
+    }
+
+    #[inline(always)]
+    fn area_indexed_packed_rgb(
+        &self,
+        current: &[u8],
+        palette_rgb: &[u64; 256],
+        out_y: usize,
+        out_x: usize,
+    ) -> u64 {
+        let pixel = &self.indexed_area_pixels[out_y * self.out_w + out_x];
+        let indexed_current = &current[pixel.base_offset as usize..];
+        let samples =
+            &self.indexed_area_samples[pixel.sample_start as usize..pixel.sample_end as usize];
         let mut packed_rgb = [0_u64; 4];
         let mut chunks = samples.chunks_exact(4);
         for chunk in &mut chunks {
             for (lane, packed) in packed_rgb.iter_mut().enumerate() {
                 let sample = unsafe { chunk.get_unchecked(lane) };
                 let palette_index =
-                    usize::from(unsafe { *current.get_unchecked(sample.offset as usize) });
+                    usize::from(unsafe { *indexed_current.get_unchecked(sample.offset as usize) });
                 let weight = u64::from(sample.weight);
                 *packed += unsafe { *palette_rgb.get_unchecked(palette_index) } * weight;
             }
         }
         for (lane, sample) in chunks.remainder().iter().enumerate() {
             let palette_index =
-                usize::from(unsafe { *current.get_unchecked(sample.offset as usize) });
+                usize::from(unsafe { *indexed_current.get_unchecked(sample.offset as usize) });
             let weight = u64::from(sample.weight);
             packed_rgb[lane] += unsafe { *palette_rgb.get_unchecked(palette_index) } * weight;
         }
-        let packed_rgb = packed_rgb.into_iter().sum::<u64>();
+        packed_rgb.into_iter().sum::<u64>()
+    }
+
+    #[inline(always)]
+    fn area_indexed_rgb_from_packed(
+        &self,
+        current: &[u8],
+        palette: &[u8],
+        out_y: usize,
+        out_x: usize,
+        packed_rgb: u64,
+    ) -> [u8; 3] {
         let sums = [
             packed_rgb & INDEXED_AREA_CHANNEL_MASK,
             (packed_rgb >> INDEXED_AREA_CHANNEL_BITS) & INDEXED_AREA_CHANNEL_MASK,
@@ -540,13 +671,7 @@ impl ImagePlan {
     }
 
     fn write_indexed_frame(&self, current: &[u8], palette: &[u8], output: &mut [u8]) {
-        let mut palette_rgb = [0_u64; 256];
-        for (palette_index, packed) in palette_rgb.iter_mut().enumerate() {
-            let offset = palette_index * 3;
-            *packed = u64::from(palette[offset])
-                | (u64::from(palette[offset + 1]) << INDEXED_AREA_CHANNEL_BITS)
-                | (u64::from(palette[offset + 2]) << (INDEXED_AREA_CHANNEL_BITS * 2));
-        }
+        let palette_rgb = Self::packed_palette(palette);
         for out_y in 0..self.out_h {
             for out_x in 0..self.out_w {
                 output[out_y * self.out_w + out_x] = Self::grayscale(self.area_indexed_rgb(
@@ -558,6 +683,138 @@ impl ImagePlan {
                 ));
             }
         }
+    }
+
+    #[inline]
+    fn packed_palette(palette: &[u8]) -> [u64; 256] {
+        let mut palette_rgb = [0_u64; 256];
+        for (palette_index, packed) in palette_rgb.iter_mut().enumerate() {
+            let offset = palette_index * 3;
+            *packed = u64::from(palette[offset])
+                | (u64::from(palette[offset + 1]) << INDEXED_AREA_CHANNEL_BITS)
+                | (u64::from(palette[offset + 2]) << (INDEXED_AREA_CHANNEL_BITS * 2));
+        }
+        palette_rgb
+    }
+
+    #[inline]
+    fn indexed_tile_fingerprint(&self, current: &[u8], tile: usize) -> u64 {
+        let descriptor = unsafe { self.indexed_tiles.get_unchecked(tile) };
+        let mut fingerprint = 0x9e37_79b9_7f4a_7c15_u64 ^ tile as u64;
+        for &offset in &descriptor.fingerprint_offsets {
+            fingerprint ^= u64::from(unsafe { *current.get_unchecked(offset as usize) })
+                .wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            fingerprint = fingerprint
+                .rotate_left(11)
+                .wrapping_mul(0x94d0_49bb_1331_11eb);
+        }
+        fingerprint
+    }
+
+    #[inline]
+    fn indexed_tile_equal(&self, current: &[u8], previous: &[u8], tile: usize) -> bool {
+        let descriptor = unsafe { self.indexed_tiles.get_unchecked(tile) };
+        let width = descriptor.source_x_end - descriptor.source_x_start;
+        for y in descriptor.source_y_start..descriptor.source_y_end {
+            let start = y * self.raw_w + descriptor.source_x_start;
+            if current[start..start + width] != previous[start..start + width] {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn write_indexed_frame_cached(
+        &self,
+        current: &[u8],
+        palette: &[u8],
+        cache: &mut IndexedAreaCache,
+        output: &mut [u8],
+    ) {
+        if !cache.valid || cache.palette != palette {
+            cache.palette_rgb = Self::packed_palette(palette);
+            cache.frame.copy_from_slice(current);
+            cache.palette.copy_from_slice(palette);
+            cache.history.clear();
+            cache.history_cursor = 0;
+            for output_offset in 0..cache.output.len() {
+                let out_y = output_offset / self.out_w;
+                let out_x = output_offset % self.out_w;
+                let packed_rgb =
+                    self.area_indexed_packed_rgb(current, &cache.palette_rgb, out_y, out_x);
+                cache.output[output_offset] = Self::grayscale(
+                    self.area_indexed_rgb_from_packed(current, palette, out_y, out_x, packed_rgb),
+                );
+            }
+            for tile in 0..INDEXED_TILE_COUNT {
+                cache.tile_fingerprints[tile] = self.indexed_tile_fingerprint(current, tile);
+            }
+            cache.valid = true;
+            output.copy_from_slice(&cache.output);
+            return;
+        }
+        if current == cache.frame {
+            output.copy_from_slice(&cache.output);
+            return;
+        }
+
+        let history_index = if cache.history.len() < INDEXED_HISTORY_CAPACITY {
+            cache.history.push(IndexedAreaSnapshot {
+                frame: vec![0; cache.frame.len()],
+                output: vec![0; cache.output.len()],
+                tile_fingerprints: vec![0; INDEXED_TILE_COUNT],
+            });
+            cache.history.len() - 1
+        } else {
+            let index = cache.history_cursor;
+            cache.history_cursor = (cache.history_cursor + 1) % INDEXED_HISTORY_CAPACITY;
+            index
+        };
+        {
+            let snapshot = &mut cache.history[history_index];
+            std::mem::swap(&mut cache.frame, &mut snapshot.frame);
+            std::mem::swap(&mut cache.output, &mut snapshot.output);
+            std::mem::swap(
+                &mut cache.tile_fingerprints,
+                &mut snapshot.tile_fingerprints,
+            );
+        }
+
+        for tile in 0..INDEXED_TILE_COUNT {
+            let fingerprint = self.indexed_tile_fingerprint(current, tile);
+            let cached_snapshot = cache.history.iter().position(|snapshot| {
+                snapshot.tile_fingerprints[tile] == fingerprint
+                    && self.indexed_tile_equal(current, &snapshot.frame, tile)
+            });
+            let descriptor = unsafe { self.indexed_tiles.get_unchecked(tile) };
+            let output_y_start = descriptor.output_y_start;
+            let output_y_end = descriptor.output_y_end;
+            let output_x_start = descriptor.output_x_start;
+            let output_x_end = descriptor.output_x_end;
+            if let Some(snapshot_index) = cached_snapshot {
+                let snapshot = &cache.history[snapshot_index];
+                for out_y in output_y_start..output_y_end {
+                    let start = out_y * self.out_w + output_x_start;
+                    let end = out_y * self.out_w + output_x_end;
+                    cache.output[start..end].copy_from_slice(&snapshot.output[start..end]);
+                }
+            } else {
+                for out_y in output_y_start..output_y_end {
+                    for out_x in output_x_start..output_x_end {
+                        let output_offset = out_y * self.out_w + out_x;
+                        let packed_rgb =
+                            self.area_indexed_packed_rgb(current, &cache.palette_rgb, out_y, out_x);
+                        cache.output[output_offset] =
+                            Self::grayscale(self.area_indexed_rgb_from_packed(
+                                current, palette, out_y, out_x, packed_rgb,
+                            ));
+                    }
+                }
+            }
+            cache.tile_fingerprints[tile] = fingerprint;
+        }
+        cache.frame.copy_from_slice(current);
+        output.copy_from_slice(&cache.output);
     }
 }
 
@@ -577,6 +834,38 @@ impl ObservationLayout {
     }
 }
 
+struct IndexedAreaCache {
+    valid: bool,
+    frame: Vec<u8>,
+    palette: Vec<u8>,
+    palette_rgb: [u64; 256],
+    output: Vec<u8>,
+    tile_fingerprints: Vec<u64>,
+    history: Vec<IndexedAreaSnapshot>,
+    history_cursor: usize,
+}
+
+struct IndexedAreaSnapshot {
+    frame: Vec<u8>,
+    output: Vec<u8>,
+    tile_fingerprints: Vec<u64>,
+}
+
+impl IndexedAreaCache {
+    fn new(raw_frame_size: usize, output_frame_size: usize) -> Self {
+        Self {
+            valid: false,
+            frame: vec![0; raw_frame_size],
+            palette: vec![0; 256 * 3],
+            palette_rgb: [0; 256],
+            output: vec![0; output_frame_size],
+            tile_fingerprints: vec![0; INDEXED_TILE_COUNT],
+            history: Vec::with_capacity(INDEXED_HISTORY_CAPACITY),
+            history_cursor: 0,
+        }
+    }
+}
+
 #[pyclass]
 struct ImageProcessor {
     num_envs: usize,
@@ -584,6 +873,7 @@ struct ImageProcessor {
     layout: ObservationLayout,
     plan: ImagePlan,
     pool: ThreadPool,
+    indexed_area_caches: Vec<Mutex<IndexedAreaCache>>,
 }
 
 impl ImageProcessor {
@@ -769,12 +1059,25 @@ impl ImageProcessor {
                     "failed to create native image worker pool: {error}"
                 ))
             })?;
+        let indexed_area_caches = if plan.indexed_tiles.is_empty() {
+            Vec::new()
+        } else {
+            (0..num_envs)
+                .map(|_| {
+                    Mutex::new(IndexedAreaCache::new(
+                        raw_height * raw_width,
+                        out_height * out_width,
+                    ))
+                })
+                .collect()
+        };
         Ok(Self {
             num_envs,
             frame_stack,
             layout: ObservationLayout::parse(layout)?,
             plan,
             pool,
+            indexed_area_caches,
         })
     }
 
@@ -1057,7 +1360,7 @@ impl ImageProcessor {
         mut stack: PyReadwriteArray5<'_, u8>,
         mut heads: PyReadwriteArray1<'_, i64>,
         mut output: PyReadwriteArray4<'_, u8>,
-    ) -> PyResult<()> {
+    ) -> PyResult<bool> {
         if self.plan.mask_crop
             || !matches!(self.plan.algorithm, ResizeAlgorithm::Area)
             || self.plan.out_c != 1
@@ -1112,6 +1415,7 @@ impl ImageProcessor {
         let stack_lane_size = self.frame_stack * image_frame_size;
         let output_lane_size = self.frame_stack * image_frame_size;
         let failed = AtomicBool::new(false);
+        let terminal = AtomicBool::new(false);
 
         py.detach(|| {
             let started = (0..self.num_envs)
@@ -1140,6 +1444,7 @@ impl ImageProcessor {
                         let new_head = (old_head + 1) % self.frame_stack;
                         let destination = new_head * image_frame_size;
                         if status & 3 != 0 {
+                            terminal.store(true, Ordering::Relaxed);
                             let source = old_head * image_frame_size;
                             if source < destination {
                                 let (before, after) = stack_lane.split_at_mut(destination);
@@ -1163,9 +1468,13 @@ impl ImageProcessor {
                                     256 * 3,
                                 )
                             };
-                            self.plan.write_indexed_frame(
+                            let mut cache = self.indexed_area_caches[lane]
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            self.plan.write_indexed_frame_cached(
                                 frame,
                                 palette,
+                                &mut cache,
                                 &mut stack_lane[destination..destination + image_frame_size],
                             );
                         }
@@ -1177,9 +1486,20 @@ impl ImageProcessor {
         if failed.load(Ordering::Relaxed) {
             return Err(PyRuntimeError::new_err("native Doom lane step failed"));
         }
-        Ok(())
+        Ok(terminal.load(Ordering::Relaxed))
     }
 
+    #[pyo3(signature = (
+        context,
+        frame_address,
+        palette_address,
+        mask,
+        stack,
+        heads,
+        output,
+        reset_address=None,
+        seeds=None
+    ))]
     #[allow(clippy::too_many_arguments)]
     fn reset_native_batch_into(
         &self,
@@ -1191,6 +1511,8 @@ impl ImageProcessor {
         mut stack: PyReadwriteArray5<'_, u8>,
         mut heads: PyReadwriteArray1<'_, i64>,
         mut output: PyReadwriteArray4<'_, u8>,
+        reset_address: Option<usize>,
+        seeds: Option<PyReadonlyArray1<'_, u32>>,
     ) -> PyResult<()> {
         let expected_stack = [
             self.num_envs,
@@ -1222,17 +1544,31 @@ impl ImageProcessor {
                 "native reset arrays have invalid shapes",
             ));
         }
+        if seeds
+            .as_ref()
+            .is_some_and(|values| values.shape() != [self.num_envs])
+            || reset_address.is_some() != seeds.is_some()
+        {
+            return Err(PyValueError::new_err(
+                "native reset address and lane seeds must be supplied together",
+            ));
+        }
 
         type BufferLane = unsafe extern "C" fn(*mut c_void, usize) -> *const u8;
+        type ResetLane = unsafe extern "C" fn(*mut c_void, usize, u32) -> u32;
         let frame_lane: BufferLane = unsafe { std::mem::transmute(frame_address) };
         let palette_lane: BufferLane = unsafe { std::mem::transmute(palette_address) };
+        let reset_lane: Option<ResetLane> =
+            reset_address.map(|address| unsafe { std::mem::transmute(address) });
         let mask_data = mask.as_slice()?;
+        let seed_data = seeds.as_ref().map(|values| values.as_slice()).transpose()?;
         let stack_data = stack.as_slice_mut()?;
         let heads_data = heads.as_slice_mut()?;
         let output_data = output.as_slice_mut()?;
         let image_frame_size = self.plan.out_h * self.plan.out_w;
         let stack_lane_size = self.frame_stack * image_frame_size;
         let output_lane_size = self.frame_stack * image_frame_size;
+        let failed = AtomicBool::new(false);
 
         py.detach(|| {
             self.pool.install(|| {
@@ -1243,34 +1579,53 @@ impl ImageProcessor {
                     .zip(mask_data.par_iter())
                     .enumerate()
                     .for_each(|(lane, (((stack_lane, head), output_lane), selected))| {
-                        if !*selected {
-                            return;
+                        if *selected {
+                            if let (Some(reset), Some(lane_seeds)) = (reset_lane, seed_data)
+                                && unsafe {
+                                    reset(
+                                        context as *mut c_void,
+                                        lane,
+                                        *lane_seeds.get_unchecked(lane),
+                                    )
+                                } & 4
+                                    != 0
+                            {
+                                failed.store(true, Ordering::Relaxed);
+                                return;
+                            }
+                            let frame = unsafe {
+                                std::slice::from_raw_parts(
+                                    frame_lane(context as *mut c_void, lane),
+                                    self.plan.raw_h * self.plan.raw_w,
+                                )
+                            };
+                            let palette = unsafe {
+                                std::slice::from_raw_parts(
+                                    palette_lane(context as *mut c_void, lane),
+                                    256 * 3,
+                                )
+                            };
+                            let mut cache = self.indexed_area_caches[lane]
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            self.plan.write_indexed_frame_cached(
+                                frame,
+                                palette,
+                                &mut cache,
+                                &mut stack_lane[..image_frame_size],
+                            );
+                            for slot in 1..self.frame_stack {
+                                stack_lane.copy_within(..image_frame_size, slot * image_frame_size);
+                            }
+                            *head = 0;
                         }
-                        let frame = unsafe {
-                            std::slice::from_raw_parts(
-                                frame_lane(context as *mut c_void, lane),
-                                self.plan.raw_h * self.plan.raw_w,
-                            )
-                        };
-                        let palette = unsafe {
-                            std::slice::from_raw_parts(
-                                palette_lane(context as *mut c_void, lane),
-                                256 * 3,
-                            )
-                        };
-                        self.plan.write_indexed_frame(
-                            frame,
-                            palette,
-                            &mut stack_lane[..image_frame_size],
-                        );
-                        for slot in 1..self.frame_stack {
-                            stack_lane.copy_within(..image_frame_size, slot * image_frame_size);
-                        }
-                        *head = 0;
-                        self.write_observation(stack_lane, 0, output_lane);
+                        self.write_observation(stack_lane, *head as usize, output_lane);
                     });
             });
         });
+        if failed.load(Ordering::Relaxed) {
+            return Err(PyRuntimeError::new_err("native Doom lane reset failed"));
+        }
         Ok(())
     }
 

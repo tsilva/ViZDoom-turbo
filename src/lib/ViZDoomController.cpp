@@ -327,7 +327,11 @@ namespace vizdoom {
         }
     }
 
-    void DoomController::startTicsBatched(unsigned int tics, bool update) {
+    //VIZDOOM_CODE
+    void DoomController::startTicsBatched(
+        unsigned int tics,
+        bool update,
+        const std::string *fixedCount) {
 
         if (!this->doomRunning) throw ViZDoomIsNotRunningException();
         if (tics <= 1) {
@@ -352,7 +356,12 @@ namespace vizdoom {
             }
         }
 
-        const std::string count = b::lexical_cast<std::string>(requestedTics);
+        //VIZDOOM_CODE
+        std::string dynamicCount;
+        const std::string &count =
+            requestedTics == tics && fixedCount != nullptr
+            ? *fixedCount
+            : (dynamicCount = b::lexical_cast<std::string>(requestedTics));
         this->lastBatchTicsMade = 0;
         this->batchInFlight = true;
         this->MQDoom->send(

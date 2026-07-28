@@ -156,6 +156,17 @@ namespace vizdoom {
             this->treatTimeoutAsTruncation);
     }
 
+    void TurboBatchStepper::resetLaneNative(size_t lane, unsigned int seed) {
+        DoomGamePython *game = this->games[lane];
+        game->turboReset(
+            seed,
+            this->gameVariablesData + lane * this->gameVariablesWidth,
+            this->gameVariablesWidth);
+        this->rewardsData[lane] = 0;
+        this->terminatedData[lane] = false;
+        this->truncatedData[lane] = false;
+    }
+
     unsigned int TurboBatchStepper::nativeStepLane(void *context, size_t lane) noexcept {
         try {
             TurboBatchStepper *stepper = static_cast<TurboBatchStepper *>(context);
@@ -188,6 +199,21 @@ namespace vizdoom {
             stepper->finishLaneNative(lane);
             return (stepper->terminatedData[lane] ? 1u : 0u) |
                 (stepper->truncatedData[lane] ? 2u : 0u);
+        }
+        catch (...) {
+            return 4;
+        }
+    }
+
+    unsigned int TurboBatchStepper::nativeResetLane(
+        void *context,
+        size_t lane,
+        unsigned int seed) noexcept {
+        try {
+            TurboBatchStepper *stepper = static_cast<TurboBatchStepper *>(context);
+            if (lane >= stepper->games.size()) return 4;
+            stepper->resetLaneNative(lane, seed);
+            return 0;
         }
         catch (...) {
             return 4;
@@ -240,6 +266,7 @@ namespace vizdoom {
             reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeStartLane),
             reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeFinishLane),
             reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeFrame),
-            reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativePalette));
+            reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativePalette),
+            reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeResetLane));
     }
 }

@@ -37,6 +37,7 @@ namespace vizdoom {
         this->grayShape.resize(2);
         this->audioShape.resize(2);
         this->variablesShape.resize(1);
+        this->turboTics = 0;
     }
 
     void DoomGamePython::setAction(pyb::object const &pyAction) {
@@ -288,7 +289,11 @@ namespace vizdoom {
         this->turboTotalBefore = this->summaryReward;
         this->turboStepAdvanced = this->doomController->isTicPossible();
         if (this->turboStepAdvanced) {
-            this->doomController->startTicsBatched(tics, true);
+            if (this->turboTics != tics) {
+                this->turboTics = tics;
+                this->turboTicsCount = std::to_string(tics);
+            }
+            this->doomController->startTicsBatched(tics, true, &this->turboTicsCount);
         }
     }
 
@@ -375,6 +380,20 @@ namespace vizdoom {
             gameVariables,
             gameVariablesSize,
             treatTimeoutAsTruncation);
+    }
+
+    void DoomGamePython::turboReset(
+        unsigned int seed,
+        double *gameVariables,
+        size_t gameVariablesSize) {
+        if (gameVariablesSize != this->availableGameVariables.size())
+            throw std::invalid_argument("game variable width does not match available variables");
+        DoomGame::setSeed(seed);
+        DoomGame::newEpisode();
+        for (size_t index = 0; index < gameVariablesSize; ++index) {
+            gameVariables[index] =
+                this->doomController->getGameVariable(this->availableGameVariables[index]);
+        }
     }
 
     void DoomGamePython::turboReadIndexedInto(
