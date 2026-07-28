@@ -27,9 +27,7 @@ IMPORT_NAME = "vizdoom_turbo"
 EXTENSION_NAME = "_vizdoom_turbo"
 RELEASE_PLATFORMS = (
     "macos-arm64",
-    "macos-x86_64",
     "linux-x86_64",
-    "linux-aarch64",
 )
 VERSION_PATTERN = re.compile(
     r"^(?P<base>[0-9]+\.[0-9]+\.[0-9]+)(?:\.post(?P<post>[0-9]+))?$"
@@ -392,9 +390,7 @@ def resolve_wheel(path: Path) -> Path:
 def wheel_platform(wheel: Path) -> str | None:
     markers = {
         "macos-arm64": ("macosx", "arm64"),
-        "macos-x86_64": ("macosx", "x86_64"),
         "linux-x86_64": ("manylinux", "x86_64"),
-        "linux-aarch64": ("manylinux", "aarch64"),
     }
     for platform_name, required in markers.items():
         if all(marker in wheel.name for marker in required):
@@ -448,11 +444,11 @@ def audit_wheel(wheel: Path, version: str) -> dict[str, object]:
             for name in names
         ),
         "macos_dependencies_vendored": (
-            wheel_platform(wheel) not in {"macos-arm64", "macos-x86_64"}
+            wheel_platform(wheel) != "macos-arm64"
             or any(".dylibs/" in name and name.endswith(".dylib") for name in names)
         ),
         "macos_sdl3_runtime_bundled": (
-            wheel_platform(wheel) not in {"macos-arm64", "macos-x86_64"}
+            wheel_platform(wheel) != "macos-arm64"
             or f"{IMPORT_NAME}/.dylibs/libSDL3.dylib" in names
         ),
         "no_external_vizdoom_dependency": "Requires-Dist: vizdoom" not in metadata,

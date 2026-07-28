@@ -162,3 +162,9 @@ def test_release_targets_only_cpython_314(
     workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text()
     assert "${{ matrix.python-version }}" not in workflow
     assert "python-version: ${{ env.PYTHON_VERSION }}" in workflow
+    assert release_build.RELEASE_PLATFORMS == (
+        "macos-arm64",
+        "linux-x86_64",
+    )
+    assert "macos-x86_64" not in workflow
+    assert "linux-aarch64" not in workflow

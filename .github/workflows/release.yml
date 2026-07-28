@@ -102,12 +102,8 @@ jobs:
         include:
           - platform: macos-arm64
             runner: macos-15
-          - platform: macos-x86_64
-            runner: macos-15-intel
           - platform: linux-x86_64
             runner: ubuntu-24.04
-          - platform: linux-aarch64
-            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout

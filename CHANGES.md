@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Nothing yet.
+- Limit release wheels to macOS ARM64 and Linux x86-64.
 
 ## 1.3.0.post10 - 2026-07-28
 
