@@ -9,6 +9,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -33,7 +34,8 @@ RELEASE_PLATFORMS = (
 VERSION_PATTERN = re.compile(
     r"^(?P<base>[0-9]+\.[0-9]+\.[0-9]+)(?:\.post(?P<post>[0-9]+))?$"
 )
-PYTHON_TAGS = ("cp311", "cp312", "cp313", "cp314")
+RELEASE_PYTHON_TAG = "cp314"
+RELEASE_REQUIRES_PYTHON = ">=3.14,<3.15"
 
 
 def run(
@@ -121,6 +123,7 @@ def check_version(args: argparse.Namespace) -> None:
     assert isinstance(project, dict)
     actual = {
         "project.name": project.get("name"),
+        "project.requires-python": project.get("requires-python"),
         "pyproject.toml": project_version(),
         "Cargo.toml": cargo_version(),
         "Cargo.lock": cargo_lock_version(),
@@ -128,6 +131,7 @@ def check_version(args: argparse.Namespace) -> None:
     }
     wanted = {
         "project.name": PACKAGE_NAME,
+        "project.requires-python": RELEASE_REQUIRES_PYTHON,
         "pyproject.toml": expected,
         "Cargo.toml": expected_base,
         "Cargo.lock": expected_base,
@@ -211,9 +215,73 @@ def wheelhouse(version: str, platform: str) -> Path:
     return PACKAGE_ROOT / f"wheelhouse-v{version}-{platform}"
 
 
+def macos_sdl3_runtime() -> Path:
+    try:
+        prefix = subprocess.check_output(
+            ["brew", "--prefix", "sdl3"],
+            text=True,
+        ).strip()
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise SystemExit("Homebrew SDL3 is required for macOS release wheels") from exc
+    runtime = Path(prefix) / "lib" / "libSDL3.dylib"
+    if not runtime.is_file():
+        raise SystemExit(f"Homebrew SDL3 runtime is missing: {runtime}")
+    return runtime
+
+
+def bundle_macos_sdl3(wheel: Path, runtime: Path) -> Path:
+    with tempfile.TemporaryDirectory(
+        prefix="vizdoom-turbo-sdl3-"
+    ) as directory:
+        work = Path(directory)
+        unpacked_output = work / "unpacked"
+        repacked_output = work / "repacked"
+        run(
+            [
+                sys.executable,
+                "-m",
+                "wheel",
+                "unpack",
+                "--dest",
+                str(unpacked_output),
+                str(wheel),
+            ]
+        )
+        unpacked = [path for path in unpacked_output.iterdir() if path.is_dir()]
+        if len(unpacked) != 1:
+            raise SystemExit(
+                f"expected one unpacked wheel in {unpacked_output}, found {len(unpacked)}"
+            )
+        dylibs = unpacked[0] / IMPORT_NAME / ".dylibs"
+        if not dylibs.is_dir():
+            raise SystemExit(f"delocated wheel is missing its dylib directory: {dylibs}")
+        shutil.copy2(runtime, dylibs / "libSDL3.dylib")
+        repacked_output.mkdir()
+        run(
+            [
+                sys.executable,
+                "-m",
+                "wheel",
+                "pack",
+                "--dest-dir",
+                str(repacked_output),
+                str(unpacked[0]),
+            ]
+        )
+        repacked = resolve_wheel(repacked_output)
+        bundled = wheel.parent / f".{wheel.name}.sdl3"
+        shutil.copy2(repacked, bundled)
+    return bundled
+
+
 def build_platform(args: argparse.Namespace) -> None:
     version = args.version or project_version()
     parse_version(version)
+    python_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    if python_tag != RELEASE_PYTHON_TAG:
+        raise SystemExit(
+            f"release builds require {RELEASE_PYTHON_TAG}, found {python_tag}"
+        )
     output = wheelhouse(version, args.platform)
     if output.exists():
         raise SystemExit(f"release output already exists: {output}")
@@ -225,8 +293,9 @@ def build_platform(args: argparse.Namespace) -> None:
         arch = args.platform.removeprefix("macos-")
         env["ARCHFLAGS"] = f"-arch {arch}"
         env["MACOSX_DEPLOYMENT_TARGET"] = "11.0" if arch == "arm64" else "10.15"
-        run([sys.executable, "scripts/stage_vizdoom_core.py", "build"], env=env)
+        sdl3_runtime = macos_sdl3_runtime()
         try:
+            run([sys.executable, "scripts/stage_vizdoom_core.py", "build"], env=env)
             run(
                 [
                     sys.executable,
@@ -269,13 +338,13 @@ def build_platform(args: argparse.Namespace) -> None:
                     env=delocate_env,
                 )
                 repaired_wheel = resolve_wheel(repaired_output)
+                bundled_wheel = bundle_macos_sdl3(repaired_wheel, sdl3_runtime)
                 wheel.unlink()
-                repaired_wheel.replace(output / repaired_wheel.name)
+                bundled_wheel.replace(output / repaired_wheel.name)
         finally:
             run([sys.executable, "scripts/stage_vizdoom_core.py", "clean"])
         return
     arch = args.platform.removeprefix("linux-")
-    python_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
     env.update(
         {
             "CIBW_ARCHS_LINUX": arch,
@@ -284,7 +353,7 @@ def build_platform(args: argparse.Namespace) -> None:
                 "openal-soft-devel && curl https://sh.rustup.rs -sSf | "
                 "sh -s -- -y --profile minimal --default-toolchain stable"
             ),
-            "CIBW_BUILD": f"{python_tag}-manylinux_{arch}",
+            "CIBW_BUILD": f"{RELEASE_PYTHON_TAG}-manylinux_{arch}",
             "CIBW_BUILD_VERBOSITY": "1",
             "CIBW_ENVIRONMENT_LINUX": (
                 'PATH="$HOME/.cargo/bin:$PATH" '
@@ -334,9 +403,8 @@ def wheel_platform(wheel: Path) -> str | None:
 
 
 def wheel_python_tag(wheel: Path) -> str | None:
-    for tag in PYTHON_TAGS:
-        if f"-{tag}-{tag}-" in wheel.name:
-            return tag
+    if f"-{RELEASE_PYTHON_TAG}-{RELEASE_PYTHON_TAG}-" in wheel.name:
+        return RELEASE_PYTHON_TAG
     return None
 
 
@@ -366,7 +434,7 @@ def audit_wheel(wheel: Path, version: str) -> dict[str, object]:
     ]
     checks = {
         "version_in_filename": version in wheel.name,
-        "python_specific_abi": wheel_python_tag(wheel) is not None,
+        "release_python_abi": wheel_python_tag(wheel) == RELEASE_PYTHON_TAG,
         "known_platform": wheel_platform(wheel) is not None,
         "has_init": f"{IMPORT_NAME}/__init__.py" in names,
         "has_environment": f"{IMPORT_NAME}/env.py" in names,
@@ -382,6 +450,10 @@ def audit_wheel(wheel: Path, version: str) -> dict[str, object]:
         "macos_dependencies_vendored": (
             wheel_platform(wheel) not in {"macos-arm64", "macos-x86_64"}
             or any(".dylibs/" in name and name.endswith(".dylib") for name in names)
+        ),
+        "macos_sdl3_runtime_bundled": (
+            wheel_platform(wheel) not in {"macos-arm64", "macos-x86_64"}
+            or f"{IMPORT_NAME}/.dylibs/libSDL3.dylib" in names
         ),
         "no_external_vizdoom_dependency": "Requires-Dist: vizdoom" not in metadata,
         "has_metadata": sum(name.endswith(".dist-info/METADATA") for name in names) == 1,
@@ -512,9 +584,7 @@ def final_check(args: argparse.Namespace) -> None:
         for result in results
     }
     expected = {
-        (platform, python)
-        for platform in RELEASE_PLATFORMS
-        for python in PYTHON_TAGS
+        (platform, RELEASE_PYTHON_TAG) for platform in RELEASE_PLATFORMS
     }
     missing = sorted(expected - seen)
     if missing:

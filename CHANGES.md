@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Nothing yet.
+- Target CPython 3.14 and emit one turbo wheel per release platform.
+- Bundle SDL3 in macOS wheels for Homebrew's SDL2 compatibility runtime.
 
 ## 1.3.0.post9 - 2026-07-28
 

@@ -140,7 +140,25 @@ def test_failed_editable_build_cleans_staged_custom_core(
     assert events == ["stage", "build", "clean"]
 
 
-def test_release_matrix_covers_each_supported_cpython(
+def test_release_targets_only_cpython_314(
     release_build: ModuleType,
 ) -> None:
-    assert release_build.PYTHON_TAGS == ("cp311", "cp312", "cp313", "cp314")
+    metadata = release_build.read_toml(REPO_ROOT / "turbo/pyproject.toml")
+    project = metadata["project"]
+    assert isinstance(project, dict)
+    assert release_build.RELEASE_PYTHON_TAG == "cp314"
+    assert project["requires-python"] == release_build.RELEASE_REQUIRES_PYTHON
+    classifiers = project["classifiers"]
+    assert isinstance(classifiers, list)
+    assert {
+        classifier
+        for classifier in classifiers
+        if isinstance(classifier, str)
+        and classifier.startswith("Programming Language :: Python")
+    } == {
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.14",
+    }
+    workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text()
+    assert "${{ matrix.python-version }}" not in workflow
+    assert "python-version: ${{ env.PYTHON_VERSION }}" in workflow
