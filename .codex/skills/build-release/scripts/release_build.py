@@ -41,9 +41,10 @@ def run(
     *,
     env: dict[str, str] | None = None,
     cwd: Path = PACKAGE_ROOT,
+    timeout: float | None = None,
 ) -> None:
-    print("+", " ".join(args))
-    subprocess.run(args, cwd=cwd, env=env, check=True)
+    print("+", " ".join(args), flush=True)
+    subprocess.run(args, cwd=cwd, env=env, check=True, timeout=timeout)
 
 
 def read_toml(path: Path) -> dict[str, object]:
@@ -433,8 +434,11 @@ import numpy as np
 from importlib.metadata import version
 from vizdoom_turbo import VizdoomTurboVecEnv, scenario_buttons
 
+print("smoke: metadata", flush=True)
 assert version("vizdoom-turbo") == %r
+print("smoke: scenario metadata", flush=True)
 assert scenario_buttons("VizdoomBasic-v1") == ("MOVE_LEFT", "MOVE_RIGHT", "ATTACK")
+print("smoke: construct environment", flush=True)
 env = VizdoomTurboVecEnv(
     "VizdoomBasic-v1",
     num_envs=2,
@@ -445,13 +449,17 @@ env = VizdoomTurboVecEnv(
     use_restricted_actions="minimal",
 )
 try:
+    print("smoke: reset", flush=True)
     observations, _ = env.reset(seed=7)
     assert observations.shape == (2, 4, 32, 40)
+    print("smoke: step", flush=True)
     env.step(np.zeros(2, dtype=np.int64))
 finally:
+    print("smoke: close", flush=True)
     env.close()
+print("smoke: complete", flush=True)
 """ % version
-        run([str(python), "-c", code])
+        run([str(python), "-c", code], timeout=120)
     print(json.dumps(result, indent=2))
 
 
