@@ -4,6 +4,19 @@
 
 - Nothing yet.
 
+## 1.3.0.post11 - 2026-07-28
+
+- Limit release wheels to macOS ARM64 and Linux x86-64.
+
+## 1.3.0.post10 - 2026-07-28
+
+- Target CPython 3.14 and emit one turbo wheel per release platform.
+- Bundle SDL3 in macOS wheels for Homebrew's SDL2 compatibility runtime.
+
+## 1.3.0.post9 - 2026-07-28
+
+- Vendor macOS wheel dependencies.
+
 ## 1.3.0.post8 - 2026-07-27
 
 - Harden release builds and parallel startup.

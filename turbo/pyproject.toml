@@ -12,10 +12,10 @@ backend-path = ["."]
 
 [project]
 name = "vizdoom-turbo"
-version = "1.3.0.post8"
+version = "1.3.0.post11"
 description = "Native-vector Gymnasium environments for high-throughput ViZDoom rollouts"
 readme = "README.md"
-requires-python = ">=3.11,<3.15"
+requires-python = ">=3.14,<3.15"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
@@ -35,9 +35,6 @@ classifiers = [
   "Operating System :: MacOS :: MacOS X",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
-  "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Programming Language :: Rust",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -64,6 +61,7 @@ dev = [
 [dependency-groups]
 release = [
   "cibuildwheel>=3.3,<4",
+  "delocate>=0.13,<1",
   "maturin>=1.8,<2",
   "setuptools>=65",
   "twine>=6.2,<7",
@@ -88,7 +86,7 @@ upstream-vizdoom-version = "1.3.0"
 testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py314"
 line-length = 100
 
 [tool.ruff.lint]

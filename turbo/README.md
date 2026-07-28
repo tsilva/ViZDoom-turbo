@@ -130,7 +130,7 @@ For release-to-release checks, use `benchmarks/compare_contract.py` to compare d
 
 ## Notes
 
-- Python 3.11–3.14 is supported. Source builds require Rust 1.85 or newer.
+- Python 3.14 is supported. Release wheels target macOS ARM64 and Linux x86-64. Source builds require Rust 1.85 or newer.
 - ViZDoom 1.3.0 supplies built-in scenarios and Freedoom assets. Commercial Doom IWADs are not included; pass one with `rom_path` when required.
 - Autoreset is disabled. Terminal lanes retain their final observation and must be selected explicitly with a masked reset.
 - Preprocessing supports crop removal or masking, max-pooling, nearest/bilinear/area resize, grayscale or RGB, frame skip, frame stacking, and CHW or HWC layouts.
