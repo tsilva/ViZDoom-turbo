@@ -10,7 +10,6 @@ import statistics
 import subprocess
 from pathlib import Path
 
-
 _SCALING_PROFILE = "scaling"
 _RLAB_PROFILE = "rlab-32x32"
 
