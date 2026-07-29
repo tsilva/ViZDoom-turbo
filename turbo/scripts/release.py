@@ -18,6 +18,7 @@ REPO_ROOT = PACKAGE_ROOT.parent
 RELEASE_HELPER = (
     REPO_ROOT / ".codex" / "skills" / "build-release" / "scripts" / "release_build.py"
 )
+STAGE_VIZDOOM_CORE = PACKAGE_ROOT / "scripts" / "stage_vizdoom_core.py"
 PYTHON = PACKAGE_ROOT / ".venv" / "bin" / "python"
 CHANGES = REPO_ROOT / "CHANGES.md"
 RELEASE_FILES = (
@@ -257,6 +258,14 @@ def promote_changelog(
     CHANGES.write_text(updated, encoding="utf-8")
 
 
+def run_pytest(env: dict[str, str]) -> None:
+    run([str(PYTHON), str(STAGE_VIZDOOM_CORE), "build"], env=env)
+    try:
+        run([str(PYTHON), "-m", "pytest", "-q"], env=env)
+    finally:
+        run([str(PYTHON), str(STAGE_VIZDOOM_CORE), "clean"], env=env)
+
+
 def run_checks(skip_checks: bool, version: str) -> None:
     if skip_checks:
         return
@@ -275,7 +284,7 @@ def run_checks(skip_checks: bool, version: str) -> None:
         ]
     )
     run(["cargo", "test", "--all-features"])
-    run([str(PYTHON), "-m", "pytest", "-q"], env=env)
+    run_pytest(env)
     run([str(PYTHON), "-m", "ruff", "check", "."], env=env)
     if sys.platform == "darwin":
         arch = platform.machine()

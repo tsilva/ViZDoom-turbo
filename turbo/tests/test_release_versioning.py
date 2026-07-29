@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -138,6 +139,49 @@ def test_failed_editable_build_cleans_staged_custom_core(
     with pytest.raises(RuntimeError, match="editable build failed"):
         build_backend.build_editable(str(tmp_path))
     assert events == ["stage", "build", "clean"]
+
+
+def test_release_pytest_stages_and_cleans_custom_core(
+    release_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    environment = {"UV_CACHE_DIR": ".uv-cache"}
+    pytest_command = [
+        str(release_script.PYTHON),
+        "-m",
+        "pytest",
+        "-q",
+    ]
+
+    def fail_pytest(
+        args: list[str],
+        *,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        assert env is environment
+        commands.append(args)
+        if args == pytest_command:
+            raise subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr(release_script, "run", fail_pytest)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        release_script.run_pytest(environment)
+
+    assert commands == [
+        [
+            str(release_script.PYTHON),
+            str(release_script.STAGE_VIZDOOM_CORE),
+            "build",
+        ],
+        pytest_command,
+        [
+            str(release_script.PYTHON),
+            str(release_script.STAGE_VIZDOOM_CORE),
+            "clean",
+        ],
+    ]
 
 
 def test_release_targets_only_cpython_314(
