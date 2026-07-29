@@ -4,6 +4,10 @@
 
 - Nothing yet.
 
+## 1.3.0.post17 - 2026-07-29
+
+- Improve ViZDoom surface texture generation.
+
 ## 1.3.0.post16 - 2026-07-29
 
 - Add `VizdoomBasic-Plus-v1` with seeded per-lane sampling across reusable
