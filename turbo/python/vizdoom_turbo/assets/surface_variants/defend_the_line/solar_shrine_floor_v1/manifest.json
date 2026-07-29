@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "solar-shrine-floor-v1",
   "display_name": "Solar Shrine Floor",
   "role": "floor",
@@ -7,37 +7,71 @@
   "lump": "SOLARF1",
   "source": {
     "generation_mode": "built-in imagegen",
-    "generated_image_sha256": "fb7ee237b01872629e8742489b1932c46db0fd82503e9a7a07fa95cf18887a08",
-    "prompt_sha256": "7c1145a508c1584849989c570267a7954b0bc9c2a946a95d425409999a5ac656",
-    "reference_assets": [],
-    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b",
-    "grid": {
-      "rows": 3,
-      "columns": 3,
-      "row": 1,
-      "column": 1,
-      "cell_inset_fraction": 0.02
+    "generated_image_sha256": "36e3e72ecce00c0f814495f02f4f449f3a67a96576b975e120ff87e4db0e2b89",
+    "prompt": "PROMPT.md",
+    "prompt_sha256": "48e41b078d2771766f1463adedbf55fee404b4b58398a935ec80b2392ffd5e1b",
+    "reference_assets": [
+      {
+        "path": "turbo/scenarios/defend_the_line_plus/source_assets/surface_theme_individual_v2/solar_shrine_wall/source.png",
+        "sha256": "bcf89dbf1eac38efdceafbd95f683d6ad882c2a731384de4d8ba5c6d7101fda8"
+      },
+      {
+        "path": "turbo/scenarios/defend_the_line_plus/source_assets/surface_theme_grid_v1/source-grid.png",
+        "sha256": "fb7ee237b01872629e8742489b1932c46db0fd82503e9a7a07fa95cf18887a08"
+      }
+    ],
+    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b"
+  },
+  "processing": {
+    "resize": {
+      "size": [
+        64,
+        64
+      ],
+      "filter": "Lanczos",
+      "passes": 1
+    },
+    "palette": {
+      "source": "base Freedoom PLAYPAL",
+      "dither": false
+    },
+    "wrap": {
+      "threshold": 1.5,
+      "blend_width": 4,
+      "initial_ratios": {
+        "x": 0.2548141604196508,
+        "y": 0.2860999704295501
+      },
+      "repaired_axes": [],
+      "final_ratios": {
+        "x": 0.2548141604196508,
+        "y": 0.2860999704295501
+      }
     }
   },
   "texture": {
     "png": "texture/SOLARF1.png",
-    "png_sha256": "2cfefb6e34535d89fab9b25637ec20d56ee652a785557e3e4204ccfa3163dc88",
+    "png_sha256": "f193e18c3c1db3a9dd5f7a53d456047b8d8f203c5e900ea749218374d4aad65b",
     "size": [
       64,
       64
     ],
     "fully_opaque": true,
     "colors_in_playpal": true,
-    "seamless_left_right": true,
-    "seamless_top_bottom": true
+    "wrap_x_within_threshold": true,
+    "wrap_y_within_threshold": true,
+    "opposite_edges_equal_x": false,
+    "opposite_edges_equal_y": false
   },
   "proof": {
+    "single_preview": "proof/single-preview.png",
+    "single_preview_sha256": "7dee4e0b79af5b60bbde299cd307bc77d3196458e4755cea8087b638cd541497",
     "tiled_preview": "proof/tiled-preview.png",
-    "tiled_preview_sha256": "1c61f1b5e7bcb1288720998e07dceee118fb839fe88381fb121219e7e5e7f21b"
+    "tiled_preview_sha256": "7f1cdf07317221eb695c4ed98b4328e98c6cf436f4a2d308d47e8b9be9d8ae97"
   },
   "provenance": {
     "origin": "Original AI-generated material texture",
-    "postprocess": "Select gutter-inset source grid cell; center crop; Lanczos downsample to 32x32; mirrored 2x2 wrap; nearest PLAYPAL quantization without dithering"
+    "postprocess": "Center crop; one-pass Lanczos downsample to 64x64; conditional narrow raised-cosine wrap reconciliation; nearest PLAYPAL quantization without dithering"
   },
   "theme": "solar-shrine-v1"
 }

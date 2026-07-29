@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "verdant-ruin-ceiling-v1",
   "display_name": "Verdant Ruin Ceiling",
   "role": "ceiling",
@@ -7,37 +7,75 @@
   "lump": "VERDC1",
   "source": {
     "generation_mode": "built-in imagegen",
-    "generated_image_sha256": "fb7ee237b01872629e8742489b1932c46db0fd82503e9a7a07fa95cf18887a08",
-    "prompt_sha256": "7c1145a508c1584849989c570267a7954b0bc9c2a946a95d425409999a5ac656",
-    "reference_assets": [],
-    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b",
-    "grid": {
-      "rows": 3,
-      "columns": 3,
-      "row": 2,
-      "column": 2,
-      "cell_inset_fraction": 0.02
+    "generated_image_sha256": "9244c5b801bccded0727d187b95ddc213cc79a60930109ddbbe08348050fe084",
+    "prompt": "PROMPT.md",
+    "prompt_sha256": "4bf0a4b45215ff4a5447bb5bfefd9924670b9807962a69d70aa802e1875ed1c7",
+    "reference_assets": [
+      {
+        "path": "turbo/scenarios/defend_the_line_plus/source_assets/surface_theme_individual_v2/verdant_ruin_wall/source.png",
+        "sha256": "99f54d7b99dd92bbac65e03e595a674e3b427e0275bddca65862174ac54e8fcb"
+      },
+      {
+        "path": "turbo/scenarios/defend_the_line_plus/source_assets/surface_theme_individual_v2/verdant_ruin_floor/source.png",
+        "sha256": "258230511a0428e00139b8dbbcba3de6b2b0689f75a43dad02e746a34e4de0cc"
+      },
+      {
+        "path": "turbo/scenarios/defend_the_line_plus/source_assets/surface_theme_grid_v1/source-grid.png",
+        "sha256": "fb7ee237b01872629e8742489b1932c46db0fd82503e9a7a07fa95cf18887a08"
+      }
+    ],
+    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b"
+  },
+  "processing": {
+    "resize": {
+      "size": [
+        64,
+        64
+      ],
+      "filter": "Lanczos",
+      "passes": 1
+    },
+    "palette": {
+      "source": "base Freedoom PLAYPAL",
+      "dither": false
+    },
+    "wrap": {
+      "threshold": 1.5,
+      "blend_width": 4,
+      "initial_ratios": {
+        "x": 0.7825509194778391,
+        "y": 0.567934739276006
+      },
+      "repaired_axes": [],
+      "final_ratios": {
+        "x": 0.7825509194778391,
+        "y": 0.567934739276006
+      }
     }
   },
   "texture": {
     "png": "texture/VERDC1.png",
-    "png_sha256": "a993e0249fdbd01df1a8957c370a6a557e7898e69015929f6e746d4071144327",
+    "png_sha256": "c18e7a68519e69169803a5be1a447c549699a28058809000ae602e6b15243391",
     "size": [
       64,
       64
     ],
     "fully_opaque": true,
     "colors_in_playpal": true,
-    "seamless_left_right": true,
-    "seamless_top_bottom": true
+    "wrap_x_within_threshold": true,
+    "wrap_y_within_threshold": true,
+    "opposite_edges_equal_x": false,
+    "opposite_edges_equal_y": false
   },
   "proof": {
+    "single_preview": "proof/single-preview.png",
+    "single_preview_sha256": "f730fb722771d155c0bf7c1eca8e5e39df7e2464a7a28aea29a7bbd95624ff22",
     "tiled_preview": "proof/tiled-preview.png",
-    "tiled_preview_sha256": "2bef95f42df0322f53689e4b9a4405d007e101d7d441b901d880597e46cfb3d1"
+    "tiled_preview_sha256": "6e3241d41ccf49d5c6862098b3afabdb242e9930b00dc329e7e35d0b1311d7e1"
   },
   "provenance": {
     "origin": "Original AI-generated material texture",
-    "postprocess": "Select gutter-inset source grid cell; center crop; Lanczos downsample to 32x32; mirrored 2x2 wrap; nearest PLAYPAL quantization without dithering"
+    "postprocess": "Center crop; one-pass Lanczos downsample to 64x64; conditional narrow raised-cosine wrap reconciliation; nearest PLAYPAL quantization without dithering"
   },
   "theme": "verdant-ruin-v1"
 }

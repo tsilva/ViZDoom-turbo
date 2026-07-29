@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "verdant-ruin-floor-v1",
   "display_name": "Verdant Ruin Floor",
   "role": "floor",
@@ -7,37 +7,71 @@
   "lump": "VERDF1",
   "source": {
     "generation_mode": "built-in imagegen",
-    "generated_image_sha256": "fb7ee237b01872629e8742489b1932c46db0fd82503e9a7a07fa95cf18887a08",
-    "prompt_sha256": "7c1145a508c1584849989c570267a7954b0bc9c2a946a95d425409999a5ac656",
-    "reference_assets": [],
-    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b",
-    "grid": {
-      "rows": 3,
-      "columns": 3,
-      "row": 2,
-      "column": 1,
-      "cell_inset_fraction": 0.02
+    "generated_image_sha256": "258230511a0428e00139b8dbbcba3de6b2b0689f75a43dad02e746a34e4de0cc",
+    "prompt": "PROMPT.md",
+    "prompt_sha256": "984f5664cfec17ef7957c558a1c6d6effae31943443735e8084795bf16a51b6e",
+    "reference_assets": [
+      {
+        "path": "turbo/scenarios/defend_the_line_plus/source_assets/surface_theme_individual_v2/verdant_ruin_wall/source.png",
+        "sha256": "99f54d7b99dd92bbac65e03e595a674e3b427e0275bddca65862174ac54e8fcb"
+      },
+      {
+        "path": "turbo/scenarios/defend_the_line_plus/source_assets/surface_theme_grid_v1/source-grid.png",
+        "sha256": "fb7ee237b01872629e8742489b1932c46db0fd82503e9a7a07fa95cf18887a08"
+      }
+    ],
+    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b"
+  },
+  "processing": {
+    "resize": {
+      "size": [
+        64,
+        64
+      ],
+      "filter": "Lanczos",
+      "passes": 1
+    },
+    "palette": {
+      "source": "base Freedoom PLAYPAL",
+      "dither": false
+    },
+    "wrap": {
+      "threshold": 1.5,
+      "blend_width": 4,
+      "initial_ratios": {
+        "x": 1.4032897226532965,
+        "y": 1.2540999527764356
+      },
+      "repaired_axes": [],
+      "final_ratios": {
+        "x": 1.4032897226532965,
+        "y": 1.2540999527764356
+      }
     }
   },
   "texture": {
     "png": "texture/VERDF1.png",
-    "png_sha256": "ba6cd586dea450b7c0615e7a503ee91a709daca2a19f93de02b26f984bc6ef9e",
+    "png_sha256": "b6feef040ed94a1351d5f55242cd7dc71a78c05ce0e1441586c78cf63d0a7954",
     "size": [
       64,
       64
     ],
     "fully_opaque": true,
     "colors_in_playpal": true,
-    "seamless_left_right": true,
-    "seamless_top_bottom": true
+    "wrap_x_within_threshold": true,
+    "wrap_y_within_threshold": true,
+    "opposite_edges_equal_x": false,
+    "opposite_edges_equal_y": false
   },
   "proof": {
+    "single_preview": "proof/single-preview.png",
+    "single_preview_sha256": "21b2ce7791f6d3122ab5ff925c346c57dfbd8afc81754b439640bfefe5bc541b",
     "tiled_preview": "proof/tiled-preview.png",
-    "tiled_preview_sha256": "f4502b2d7d03261a5603227b9ff0fa18f01a1ba21c9732c49e79bbe3a4e8a8b2"
+    "tiled_preview_sha256": "1f2a947e2f2152a5a3ca69ad9d6101505fdd11a96661352910385c4e942ca315"
   },
   "provenance": {
     "origin": "Original AI-generated material texture",
-    "postprocess": "Select gutter-inset source grid cell; center crop; Lanczos downsample to 32x32; mirrored 2x2 wrap; nearest PLAYPAL quantization without dithering"
+    "postprocess": "Center crop; one-pass Lanczos downsample to 64x64; conditional narrow raised-cosine wrap reconciliation; nearest PLAYPAL quantization without dithering"
   },
   "theme": "verdant-ruin-v1"
 }

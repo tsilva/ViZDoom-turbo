@@ -154,10 +154,10 @@ and the role-keyed `active_enemy_variant_ids()` and
 
 The surface catalog also exposes three image-generated, coordinated sets through
 the immutable `surface_variant_themes` mapping: `polar-bunker-v1`,
-`solar-shrine-v1`, and `verdant-ruin-v1`. Each maps to one matching wall, floor,
-and ceiling id produced from the same source-grid row. Role selection remains
-independent, so configure each role with the corresponding singleton id when a
-reset must use one intact visual theme.
+`solar-shrine-v1`, and `verdant-ruin-v1`. Each maps to matching wall, floor, and
+ceiling ids generated as individual material sources with shared theme
+references. Role selection remains independent, so configure each role with the
+corresponding singleton id when a reset must use one intact visual theme.
 
 In a GradLab environment config, declare the same list under
 `env_config.env_args.enemy_variants` or `env_config.env_args.surface_variants`.
@@ -171,19 +171,20 @@ the editable scenario sources with:
 ```bash
 uv run python scripts/build_basic_plus.py \
   --acc /absolute/path/to/acc \
-  --acc-include /absolute/path/to/acc/include
+  --acc-include /absolute/path/to/acc-source
 
 uv run python scripts/build_defend_line_plus.py \
   --acc /absolute/path/to/acc \
-  --acc-include /absolute/path/to/acc/include
+  --acc-include /absolute/path/to/acc-source
 ```
 
 New generated surface sources can be normalized into a compatible tile with
 `scripts/process_surface_variant.py`; its manifest gate verifies opacity,
-palette membership, exact dimensions, and matching opposite edges. The script
-can also select gutter-inset cells from a generated grid with `--grid-row` and
-`--grid-column`; the source and processed 3×3 theme grids live with the editable
-Defend the Line Plus scenario sources.
+palette membership, exact dimensions, and measured wrap seams. The default
+pipeline center-crops one material source and downsamples it directly to 64×64,
+repairing only wrap axes that exceed the seam threshold. Legacy generated grids
+remain supported through `--grid-row` and `--grid-column`; source and processed
+comparison grids live with the editable Defend the Line Plus scenario sources.
 
 ## Turbo Vector API v1
 

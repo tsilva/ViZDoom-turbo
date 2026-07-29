@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -82,6 +83,43 @@ def _catalog_asset(alias: str, relative_path: str, label: str) -> Path:
     return path
 
 
+def _texture_wrap_is_compatible(
+    manifest: Mapping[str, Any],
+    raw_texture: Mapping[str, Any],
+) -> bool:
+    if manifest.get("schema_version") == 1:
+        return (
+            raw_texture.get("seamless_left_right") is True
+            and raw_texture.get("seamless_top_bottom") is True
+        )
+    if manifest.get("schema_version") != 2:
+        return False
+    processing = manifest.get("processing")
+    wrap = processing.get("wrap") if isinstance(processing, dict) else None
+    final_ratios = wrap.get("final_ratios") if isinstance(wrap, dict) else None
+    threshold = wrap.get("threshold") if isinstance(wrap, dict) else None
+    if (
+        isinstance(threshold, bool)
+        or not isinstance(threshold, int | float)
+        or not math.isfinite(threshold)
+        or threshold < 0
+        or not isinstance(final_ratios, dict)
+    ):
+        return False
+    ratios = (final_ratios.get("x"), final_ratios.get("y"))
+    return (
+        raw_texture.get("wrap_x_within_threshold") is True
+        and raw_texture.get("wrap_y_within_threshold") is True
+        and all(
+            not isinstance(ratio, bool)
+            and isinstance(ratio, int | float)
+            and math.isfinite(ratio)
+            and 0 <= ratio <= threshold
+            for ratio in ratios
+        )
+    )
+
+
 def _manifest_asset(
     raw: Mapping[str, Any],
     *,
@@ -126,8 +164,7 @@ def _manifest_asset(
         raw_texture.get("size") != [64, 64]
         or raw_texture.get("fully_opaque") is not True
         or raw_texture.get("colors_in_playpal") is not True
-        or raw_texture.get("seamless_left_right") is not True
-        or raw_texture.get("seamless_top_bottom") is not True
+        or not _texture_wrap_is_compatible(manifest, raw_texture)
     ):
         raise RuntimeError(f"surface variant {variant_id!r} failed compatibility checks")
     return asset, expected_hash
@@ -333,8 +370,7 @@ def load_surface_themes(alias: str) -> Mapping[str, Mapping[str, str]]:
     return _validated_themes(_catalog_document(alias), catalog)
 
 
-def load_defend_line_surface_catalog(
-) -> tuple[Mapping[str, tuple[AppearanceVariant, ...]], str]:
+def load_defend_line_surface_catalog() -> tuple[Mapping[str, tuple[AppearanceVariant, ...]], str]:
     return load_surface_catalog("defend_the_line_plus")
 
 

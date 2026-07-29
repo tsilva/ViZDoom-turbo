@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "polar-bunker-ceiling-v1",
   "display_name": "Polar Bunker Ceiling",
   "role": "ceiling",
@@ -7,37 +7,75 @@
   "lump": "POLARC1",
   "source": {
     "generation_mode": "built-in imagegen",
-    "generated_image_sha256": "fb7ee237b01872629e8742489b1932c46db0fd82503e9a7a07fa95cf18887a08",
-    "prompt_sha256": "7c1145a508c1584849989c570267a7954b0bc9c2a946a95d425409999a5ac656",
-    "reference_assets": [],
-    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b",
-    "grid": {
-      "rows": 3,
-      "columns": 3,
-      "row": 0,
-      "column": 2,
-      "cell_inset_fraction": 0.02
+    "generated_image_sha256": "a193a55a3546e84ed28b089a2bed84a6d039f3aa854a601d5bd83a87ecec71dd",
+    "prompt": "PROMPT.md",
+    "prompt_sha256": "6c7395e9e23ddd417006669884a6689be6bdd2244a898914c614476a7e1b252f",
+    "reference_assets": [
+      {
+        "path": "turbo/scenarios/defend_the_line_plus/source_assets/surface_theme_individual_v2/polar_bunker_wall/source.png",
+        "sha256": "c1f7083fb9ab315a77adfe5682f395bc0e70db59226660d824b15b82b566d64e"
+      },
+      {
+        "path": "turbo/scenarios/defend_the_line_plus/source_assets/surface_theme_individual_v2/polar_bunker_floor/source.png",
+        "sha256": "4c5db549181744c4f658cfaa36381c8474ef716cff074bc8775c7ad03c0e026d"
+      },
+      {
+        "path": "turbo/scenarios/defend_the_line_plus/source_assets/surface_theme_grid_v1/source-grid.png",
+        "sha256": "fb7ee237b01872629e8742489b1932c46db0fd82503e9a7a07fa95cf18887a08"
+      }
+    ],
+    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b"
+  },
+  "processing": {
+    "resize": {
+      "size": [
+        64,
+        64
+      ],
+      "filter": "Lanczos",
+      "passes": 1
+    },
+    "palette": {
+      "source": "base Freedoom PLAYPAL",
+      "dither": false
+    },
+    "wrap": {
+      "threshold": 1.5,
+      "blend_width": 4,
+      "initial_ratios": {
+        "x": 0.38443935926773537,
+        "y": 0.5423790469261571
+      },
+      "repaired_axes": [],
+      "final_ratios": {
+        "x": 0.38443935926773537,
+        "y": 0.5423790469261571
+      }
     }
   },
   "texture": {
     "png": "texture/POLARC1.png",
-    "png_sha256": "2556c0282d4763fe3c38aff2d26fd120e473034601356db8baa65c41f0b06706",
+    "png_sha256": "bde6dff247f5ac9822bc53a85b76820990da621b5821af082b92964b85949133",
     "size": [
       64,
       64
     ],
     "fully_opaque": true,
     "colors_in_playpal": true,
-    "seamless_left_right": true,
-    "seamless_top_bottom": true
+    "wrap_x_within_threshold": true,
+    "wrap_y_within_threshold": true,
+    "opposite_edges_equal_x": false,
+    "opposite_edges_equal_y": false
   },
   "proof": {
+    "single_preview": "proof/single-preview.png",
+    "single_preview_sha256": "f23b3f6ca6b747f24f021f7dc311a902e81ec4832ff5db7a80cd2406bd3c88ae",
     "tiled_preview": "proof/tiled-preview.png",
-    "tiled_preview_sha256": "a8a7b1c5b55c64d07e3aa1916a3a2a161747b6d151540358833c2bc64e088b18"
+    "tiled_preview_sha256": "74dc512d6bab937525482de3627114974366f07cd3e27bbf1b3e86b7016f86c3"
   },
   "provenance": {
     "origin": "Original AI-generated material texture",
-    "postprocess": "Select gutter-inset source grid cell; center crop; Lanczos downsample to 32x32; mirrored 2x2 wrap; nearest PLAYPAL quantization without dithering"
+    "postprocess": "Center crop; one-pass Lanczos downsample to 64x64; conditional narrow raised-cosine wrap reconciliation; nearest PLAYPAL quantization without dithering"
   },
   "theme": "polar-bunker-v1"
 }

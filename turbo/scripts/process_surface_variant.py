@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import struct
 from pathlib import Path
 
@@ -66,24 +67,124 @@ def grid_cell(
     return rgb.crop((left + inset, top + inset, right - inset, bottom - inset))
 
 
-def seamless_tile(source: Image.Image) -> Image.Image:
+def direct_tile(source: Image.Image) -> Image.Image:
     rgb = source.convert("RGB")
     edge = min(rgb.size)
     left = (rgb.width - edge) // 2
     top = (rgb.height - edge) // 2
-    base = rgb.crop((left, top, left + edge, top + edge)).resize((32, 32), Image.Resampling.LANCZOS)
-    tile = Image.new("RGB", (64, 64))
-    tile.paste(base, (0, 0))
-    tile.paste(ImageOps.mirror(base), (32, 0))
-    tile.paste(ImageOps.flip(base), (0, 32))
-    tile.paste(ImageOps.flip(ImageOps.mirror(base)), (32, 32))
-    return tile
+    return rgb.crop((left, top, left + edge, top + edge)).resize(
+        (64, 64),
+        Image.Resampling.LANCZOS,
+    )
+
+
+def color_distance(left: tuple[int, int, int], right: tuple[int, int, int]) -> float:
+    return math.sqrt(sum((left[index] - right[index]) ** 2 for index in range(3)))
+
+
+def wrap_seam_ratio(image: Image.Image, axis: str) -> float:
+    rgb = image.convert("RGB")
+    pixels = rgb.load()
+    if axis == "x":
+        seam = (
+            sum(color_distance(pixels[0, y], pixels[rgb.width - 1, y]) for y in range(rgb.height))
+            / rgb.height
+        )
+        adjacent = sum(
+            color_distance(pixels[x, y], pixels[x + 1, y])
+            for y in range(rgb.height)
+            for x in range(rgb.width - 1)
+        ) / (rgb.height * (rgb.width - 1))
+    elif axis == "y":
+        seam = (
+            sum(color_distance(pixels[x, 0], pixels[x, rgb.height - 1]) for x in range(rgb.width))
+            / rgb.width
+        )
+        adjacent = sum(
+            color_distance(pixels[x, y], pixels[x, y + 1])
+            for x in range(rgb.width)
+            for y in range(rgb.height - 1)
+        ) / (rgb.width * (rgb.height - 1))
+    else:
+        raise ValueError(f"unsupported wrap axis: {axis}")
+    if adjacent == 0:
+        return 0.0 if seam == 0 else 1_000_000.0
+    return seam / adjacent
+
+
+def reconcile_wrap(image: Image.Image, axis: str, width: int) -> Image.Image:
+    rgb = image.convert("RGB")
+    dimension = rgb.width if axis == "x" else rgb.height
+    if width < 2 or width * 2 >= dimension:
+        raise ValueError("--seam-blend-width must be at least 2 and less than half the tile size")
+    source = rgb.load()
+    repaired = rgb.copy()
+    target = repaired.load()
+    for offset in range(width):
+        phase = offset / (width - 1)
+        strength = 0.5 * (1.0 + math.cos(math.pi * phase))
+        span = rgb.height if axis == "x" else rgb.width
+        for position in range(span):
+            if axis == "x":
+                first_coord = (offset, position)
+                last_coord = (rgb.width - 1 - offset, position)
+            else:
+                first_coord = (position, offset)
+                last_coord = (position, rgb.height - 1 - offset)
+            first = source[first_coord]
+            last = source[last_coord]
+            midpoint = tuple(round((first[index] + last[index]) / 2) for index in range(3))
+            target[first_coord] = tuple(
+                round(first[index] * (1.0 - strength) + midpoint[index] * strength)
+                for index in range(3)
+            )
+            target[last_coord] = tuple(
+                round(last[index] * (1.0 - strength) + midpoint[index] * strength)
+                for index in range(3)
+            )
+    return repaired
+
+
+def compile_tile(
+    source: Image.Image,
+    *,
+    palette: Image.Image,
+    seam_threshold: float,
+    seam_blend_width: int,
+) -> tuple[Image.Image, dict[str, object]]:
+    normalized = direct_tile(source)
+    initial = normalized.quantize(palette=palette, dither=Image.Dither.NONE)
+    initial_ratios = {axis: wrap_seam_ratio(initial, axis) for axis in ("x", "y")}
+    repaired_axes: list[str] = []
+    quantized = initial
+    final_ratios = dict(initial_ratios)
+    for _ in range(2):
+        failing = [
+            axis
+            for axis in ("x", "y")
+            if final_ratios[axis] > seam_threshold and axis not in repaired_axes
+        ]
+        if not failing:
+            break
+        for axis in failing:
+            normalized = reconcile_wrap(normalized, axis, seam_blend_width)
+            repaired_axes.append(axis)
+        quantized = normalized.quantize(palette=palette, dither=Image.Dither.NONE)
+        final_ratios = {axis: wrap_seam_ratio(quantized, axis) for axis in ("x", "y")}
+    return quantized, {
+        "threshold": seam_threshold,
+        "blend_width": seam_blend_width,
+        "initial_ratios": initial_ratios,
+        "repaired_axes": repaired_axes,
+        "final_ratios": final_ratios,
+    }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--prompt", type=Path, required=True)
+    parser.add_argument("--reference-asset", type=Path, action="append", default=[])
     parser.add_argument("--freedoom-wad", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--id", required=True)
@@ -96,6 +197,8 @@ def main() -> None:
     parser.add_argument("--grid-column", type=int)
     parser.add_argument("--grid-rows", type=int, default=3)
     parser.add_argument("--grid-columns", type=int, default=3)
+    parser.add_argument("--seam-threshold", type=float, default=1.5)
+    parser.add_argument("--seam-blend-width", type=int, default=4)
     args = parser.parse_args()
 
     if (
@@ -115,18 +218,26 @@ def main() -> None:
             rows=args.grid_rows,
             columns=args.grid_columns,
         )
-        normalized = seamless_tile(selected_source)
-    quantized = normalized.quantize(palette=palette, dither=Image.Dither.NONE)
+        quantized, wrap = compile_tile(
+            selected_source,
+            palette=palette,
+            seam_threshold=args.seam_threshold,
+            seam_blend_width=args.seam_blend_width,
+        )
 
     texture_dir = args.output_dir / "texture"
     proof_dir = args.output_dir / "proof"
     texture_dir.mkdir(parents=True, exist_ok=True)
     proof_dir.mkdir(parents=True, exist_ok=True)
+    packaged_prompt_path = args.output_dir / "PROMPT.md"
     texture_path = texture_dir / f"{args.lump}.png"
+    single_preview_path = proof_dir / "single-preview.png"
     preview_path = proof_dir / "tiled-preview.png"
+    packaged_prompt_path.write_bytes(args.prompt.read_bytes())
     quantized.save(texture_path)
 
     tile_rgb = quantized.convert("RGB")
+    tile_rgb.resize((512, 512), Image.Resampling.NEAREST).save(single_preview_path)
     preview = Image.new("RGB", (256, 256))
     for y in range(0, preview.height, tile_rgb.height):
         for x in range(0, preview.width, tile_rgb.width):
@@ -139,8 +250,9 @@ def main() -> None:
     right_edge = [tile_rgb.getpixel((tile_rgb.width - 1, y)) for y in range(tile_rgb.height)]
     top_edge = [tile_rgb.getpixel((x, 0)) for x in range(tile_rgb.width)]
     bottom_edge = [tile_rgb.getpixel((x, tile_rgb.height - 1)) for x in range(tile_rgb.width)]
+    final_wrap = wrap["final_ratios"]
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "id": args.id,
         "display_name": args.display_name,
         "role": args.role,
@@ -149,9 +261,28 @@ def main() -> None:
         "source": {
             "generation_mode": "built-in imagegen",
             "generated_image_sha256": sha256(args.source),
-            "prompt_sha256": sha256(args.prompt),
-            "reference_assets": [],
+            "prompt": packaged_prompt_path.name,
+            "prompt_sha256": sha256(packaged_prompt_path),
+            "reference_assets": [
+                {
+                    "path": str(reference),
+                    "sha256": sha256(reference),
+                }
+                for reference in args.reference_asset
+            ],
             "freedoom_wad_sha256": sha256(args.freedoom_wad),
+        },
+        "processing": {
+            "resize": {
+                "size": [64, 64],
+                "filter": "Lanczos",
+                "passes": 1,
+            },
+            "palette": {
+                "source": "base Freedoom PLAYPAL",
+                "dither": False,
+            },
+            "wrap": wrap,
         },
         "texture": {
             "png": f"texture/{args.lump}.png",
@@ -159,18 +290,23 @@ def main() -> None:
             "size": [64, 64],
             "fully_opaque": True,
             "colors_in_playpal": pixels <= playpal_colors,
-            "seamless_left_right": left_edge == right_edge,
-            "seamless_top_bottom": top_edge == bottom_edge,
+            "wrap_x_within_threshold": final_wrap["x"] <= args.seam_threshold,
+            "wrap_y_within_threshold": final_wrap["y"] <= args.seam_threshold,
+            "opposite_edges_equal_x": left_edge == right_edge,
+            "opposite_edges_equal_y": top_edge == bottom_edge,
         },
         "proof": {
+            "single_preview": "proof/single-preview.png",
+            "single_preview_sha256": sha256(single_preview_path),
             "tiled_preview": "proof/tiled-preview.png",
             "tiled_preview_sha256": sha256(preview_path),
         },
         "provenance": {
             "origin": "Original AI-generated material texture",
             "postprocess": (
-                "Center crop; Lanczos downsample to 32x32; mirrored 2x2 wrap; "
-                "nearest PLAYPAL quantization without dithering"
+                "Center crop; one-pass Lanczos downsample to 64x64; conditional "
+                "narrow raised-cosine wrap reconciliation; nearest PLAYPAL "
+                "quantization without dithering"
             ),
         },
     }
@@ -185,14 +321,15 @@ def main() -> None:
             "cell_inset_fraction": 0.02,
         }
         manifest["provenance"]["postprocess"] = (
-            "Select gutter-inset source grid cell; center crop; Lanczos downsample "
-            "to 32x32; mirrored 2x2 wrap; nearest PLAYPAL quantization without dithering"
+            "Select gutter-inset source grid cell; center crop; one-pass Lanczos "
+            "downsample to 64x64; conditional narrow raised-cosine wrap "
+            "reconciliation; nearest PLAYPAL quantization without dithering"
         )
     if not all(
         (
             manifest["texture"]["colors_in_playpal"],
-            manifest["texture"]["seamless_left_right"],
-            manifest["texture"]["seamless_top_bottom"],
+            manifest["texture"]["wrap_x_within_threshold"],
+            manifest["texture"]["wrap_y_within_threshold"],
         )
     ):
         raise RuntimeError("processed texture failed its compatibility checks")
