@@ -13,7 +13,6 @@ import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
-
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PACKAGE_ROOT.parent
 STAGED_PACKAGE = PACKAGE_ROOT / "python" / "vizdoom"
