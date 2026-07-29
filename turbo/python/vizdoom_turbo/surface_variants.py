@@ -10,11 +10,14 @@ from types import MappingProxyType
 from typing import Any
 
 _ASSET_ROOT = Path(__file__).resolve().parent / "assets" / "surface_variants"
-_CATALOG_PATH = _ASSET_ROOT / "defend_the_line" / "catalog.json"
+_CATALOG_PATHS = {
+    "basic_plus": _ASSET_ROOT / "basic" / "catalog.json",
+    "defend_the_line_plus": _ASSET_ROOT / "defend_the_line" / "catalog.json",
+}
 _SAFE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]*$")
 _SAFE_ROLE = re.compile(r"^[a-z][a-z0-9_]*$")
 _SAFE_CVAR = re.compile(r"^[a-z_][a-z0-9_]*$")
-_SAFE_TEXTURE = re.compile(r"^[A-Z0-9]{1,8}$")
+_SAFE_TEXTURE = re.compile(r"^[A-Z0-9_]{1,8}$")
 
 
 @dataclass(frozen=True)
@@ -30,6 +33,19 @@ class SurfaceVariant:
     asset_sha256: str | None
 
 
+@dataclass(frozen=True)
+class TextureSetVariant:
+    role: str
+    selector_cvar: str
+    variant_id: str
+    scenario_index: int
+    theme: str | None
+    surfaces: Mapping[str, SurfaceVariant]
+
+
+AppearanceVariant = SurfaceVariant | TextureSetVariant
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -38,19 +54,27 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _catalog_document() -> dict[str, Any]:
+def _catalog_path(alias: str) -> Path:
     try:
-        document = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
+        return _CATALOG_PATHS[alias]
+    except KeyError as exc:
+        raise ValueError(f"unknown Plus scenario alias: {alias!r}") from exc
+
+
+def _catalog_document(alias: str) -> dict[str, Any]:
+    catalog_path = _catalog_path(alias)
+    try:
+        document = json.loads(catalog_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"invalid surface-variant catalog: {_CATALOG_PATH}") from exc
-    if document.get("schema_version") != 1:
-        raise RuntimeError("surface-variant catalog must use schema_version 1")
+        raise RuntimeError(f"invalid surface-variant catalog: {catalog_path}") from exc
+    if document.get("schema_version") not in {1, 2}:
+        raise RuntimeError("surface-variant catalog must use schema_version 1 or 2")
     return document
 
 
-def _catalog_asset(relative_path: str, label: str) -> Path:
-    path = (_CATALOG_PATH.parent / relative_path).resolve()
-    root = _CATALOG_PATH.parent.resolve()
+def _catalog_asset(alias: str, relative_path: str, label: str) -> Path:
+    path = (_catalog_path(alias).parent / relative_path).resolve()
+    root = _ASSET_ROOT.resolve()
     if root not in path.parents:
         raise RuntimeError(f"{label} escapes the surface-variant asset directory")
     if not path.is_file():
@@ -61,6 +85,7 @@ def _catalog_asset(relative_path: str, label: str) -> Path:
 def _manifest_asset(
     raw: Mapping[str, Any],
     *,
+    alias: str,
     role: str,
     variant_id: str,
     namespace: str,
@@ -74,7 +99,7 @@ def _manifest_asset(
         return None, None
     if not isinstance(raw_manifest, str) or not raw_manifest:
         raise RuntimeError(f"surface variant {variant_id!r} must declare a manifest")
-    manifest_path = _catalog_asset(raw_manifest, f"{variant_id} manifest")
+    manifest_path = _catalog_asset(alias, raw_manifest, f"{variant_id} manifest")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -108,12 +133,116 @@ def _manifest_asset(
     return asset, expected_hash
 
 
-def load_defend_line_surface_catalog() -> tuple[Mapping[str, tuple[SurfaceVariant, ...]], str]:
-    document = _catalog_document()
+def _surface_variant(
+    alias: str,
+    raw: Mapping[str, Any],
+    *,
+    role: str,
+    selector_cvar: str,
+) -> SurfaceVariant:
+    variant_id = str(raw.get("id") or "")
+    scenario_index = raw.get("scenario_index")
+    texture = str(raw.get("texture") or "")
+    namespace = str(raw.get("namespace") or "")
+    raw_theme = raw.get("theme")
+    theme = None if raw_theme is None else str(raw_theme)
+    if not _SAFE_IDENTIFIER.fullmatch(variant_id):
+        raise RuntimeError(f"invalid surface variant id: {variant_id!r}")
+    if (
+        isinstance(scenario_index, bool)
+        or not isinstance(scenario_index, int)
+        or scenario_index < 0
+    ):
+        raise RuntimeError(f"invalid scenario index for {variant_id!r}")
+    if not _SAFE_TEXTURE.fullmatch(texture):
+        raise RuntimeError(f"invalid texture name for {variant_id!r}")
+    if namespace not in {"texture", "flat"}:
+        raise RuntimeError(f"invalid namespace for {variant_id!r}")
+    if theme is not None and not _SAFE_IDENTIFIER.fullmatch(theme):
+        raise RuntimeError(f"invalid theme for {variant_id!r}")
+    asset, asset_sha256 = _manifest_asset(
+        raw,
+        alias=alias,
+        role=role,
+        variant_id=variant_id,
+        namespace=namespace,
+        texture=texture,
+        theme=theme,
+    )
+    return SurfaceVariant(
+        role=role,
+        selector_cvar=selector_cvar,
+        variant_id=variant_id,
+        scenario_index=scenario_index,
+        texture=texture,
+        namespace=namespace,
+        theme=theme,
+        asset=asset,
+        asset_sha256=asset_sha256,
+    )
+
+
+def _texture_set_variant(
+    alias: str,
+    raw: Mapping[str, Any],
+    *,
+    role: str,
+    selector_cvar: str,
+) -> TextureSetVariant:
+    variant_id = str(raw.get("id") or "")
+    scenario_index = raw.get("scenario_index")
+    raw_theme = raw.get("theme")
+    theme = None if raw_theme is None else str(raw_theme)
+    if not _SAFE_IDENTIFIER.fullmatch(variant_id):
+        raise RuntimeError(f"invalid texture-set id: {variant_id!r}")
+    if (
+        isinstance(scenario_index, bool)
+        or not isinstance(scenario_index, int)
+        or scenario_index < 0
+    ):
+        raise RuntimeError(f"invalid scenario index for {variant_id!r}")
+    if theme is not None and not _SAFE_IDENTIFIER.fullmatch(theme):
+        raise RuntimeError(f"invalid theme for {variant_id!r}")
+    raw_surfaces = raw.get("surfaces")
+    if not isinstance(raw_surfaces, dict) or set(raw_surfaces) != {
+        "wall",
+        "floor",
+        "ceiling",
+    }:
+        raise RuntimeError(f"texture set {variant_id!r} must define wall, floor, and ceiling")
+    surfaces: dict[str, SurfaceVariant] = {}
+    for surface_role, raw_surface in raw_surfaces.items():
+        if not isinstance(raw_surface, dict):
+            raise RuntimeError(f"invalid {surface_role} surface in texture set {variant_id!r}")
+        surface = _surface_variant(
+            alias,
+            raw_surface,
+            role=surface_role,
+            selector_cvar=selector_cvar,
+        )
+        if surface.scenario_index != scenario_index or surface.theme != theme:
+            raise RuntimeError(
+                f"texture set {variant_id!r} has inconsistent {surface_role} metadata"
+            )
+        surfaces[surface_role] = surface
+    return TextureSetVariant(
+        role=role,
+        selector_cvar=selector_cvar,
+        variant_id=variant_id,
+        scenario_index=scenario_index,
+        theme=theme,
+        surfaces=MappingProxyType(surfaces),
+    )
+
+
+def load_surface_catalog(
+    alias: str,
+) -> tuple[Mapping[str, tuple[AppearanceVariant, ...]], str]:
+    document = _catalog_document(alias)
     raw_roles = document.get("roles")
     if not isinstance(raw_roles, dict) or not raw_roles:
         raise RuntimeError("surface-variant catalog must contain roles")
-    resolved_roles: dict[str, tuple[SurfaceVariant, ...]] = {}
+    resolved_roles: dict[str, tuple[AppearanceVariant, ...]] = {}
     for role, raw_role in raw_roles.items():
         if not isinstance(role, str) or not _SAFE_ROLE.fullmatch(role):
             raise RuntimeError(f"invalid surface role: {role!r}")
@@ -125,57 +254,32 @@ def load_defend_line_surface_catalog() -> tuple[Mapping[str, tuple[SurfaceVarian
         raw_variants = raw_role.get("variants")
         if not isinstance(raw_variants, list) or not raw_variants:
             raise RuntimeError(f"surface role {role!r} must contain variants")
-        variants: list[SurfaceVariant] = []
+        variants: list[AppearanceVariant] = []
         seen_ids: set[str] = set()
         seen_indices: set[int] = set()
         for raw in raw_variants:
             if not isinstance(raw, dict):
                 raise RuntimeError("surface-variant catalog entries must be objects")
-            variant_id = str(raw.get("id") or "")
-            scenario_index = raw.get("scenario_index")
-            texture = str(raw.get("texture") or "")
-            namespace = str(raw.get("namespace") or "")
-            raw_theme = raw.get("theme")
-            theme = None if raw_theme is None else str(raw_theme)
-            if not _SAFE_IDENTIFIER.fullmatch(variant_id):
-                raise RuntimeError(f"invalid surface variant id: {variant_id!r}")
-            if (
-                isinstance(scenario_index, bool)
-                or not isinstance(scenario_index, int)
-                or scenario_index < 0
-            ):
-                raise RuntimeError(f"invalid scenario index for {variant_id!r}")
-            if not _SAFE_TEXTURE.fullmatch(texture):
-                raise RuntimeError(f"invalid texture name for {variant_id!r}")
-            if namespace not in {"texture", "flat"}:
-                raise RuntimeError(f"invalid namespace for {variant_id!r}")
-            if theme is not None and not _SAFE_IDENTIFIER.fullmatch(theme):
-                raise RuntimeError(f"invalid theme for {variant_id!r}")
-            if variant_id in seen_ids or scenario_index in seen_indices:
-                raise RuntimeError(f"surface role {role!r} has duplicate ids or scenario indices")
-            seen_ids.add(variant_id)
-            seen_indices.add(scenario_index)
-            asset, asset_sha256 = _manifest_asset(
-                raw,
-                role=role,
-                variant_id=variant_id,
-                namespace=namespace,
-                texture=texture,
-                theme=theme,
-            )
-            variants.append(
-                SurfaceVariant(
+            variant = (
+                _texture_set_variant(
+                    alias,
+                    raw,
                     role=role,
                     selector_cvar=selector_cvar,
-                    variant_id=variant_id,
-                    scenario_index=scenario_index,
-                    texture=texture,
-                    namespace=namespace,
-                    theme=theme,
-                    asset=asset,
-                    asset_sha256=asset_sha256,
+                )
+                if "surfaces" in raw
+                else _surface_variant(
+                    alias,
+                    raw,
+                    role=role,
+                    selector_cvar=selector_cvar,
                 )
             )
+            if variant.variant_id in seen_ids or variant.scenario_index in seen_indices:
+                raise RuntimeError(f"surface role {role!r} has duplicate ids or scenario indices")
+            seen_ids.add(variant.variant_id)
+            seen_indices.add(variant.scenario_index)
+            variants.append(variant)
         defaults = raw_role.get("default_variants")
         if (
             not isinstance(defaults, list)
@@ -191,7 +295,7 @@ def load_defend_line_surface_catalog() -> tuple[Mapping[str, tuple[SurfaceVarian
 
 def _validated_themes(
     document: Mapping[str, Any],
-    roles: Mapping[str, tuple[SurfaceVariant, ...]],
+    roles: Mapping[str, tuple[AppearanceVariant, ...]],
 ) -> Mapping[str, Mapping[str, str]]:
     raw_themes = document.get("themes")
     if not isinstance(raw_themes, dict) or not raw_themes:
@@ -224,9 +328,18 @@ def _validated_themes(
     return MappingProxyType(themes)
 
 
+def load_surface_themes(alias: str) -> Mapping[str, Mapping[str, str]]:
+    catalog, _catalog_hash = load_surface_catalog(alias)
+    return _validated_themes(_catalog_document(alias), catalog)
+
+
+def load_defend_line_surface_catalog(
+) -> tuple[Mapping[str, tuple[AppearanceVariant, ...]], str]:
+    return load_surface_catalog("defend_the_line_plus")
+
+
 def load_defend_line_surface_themes() -> Mapping[str, Mapping[str, str]]:
-    catalog, _catalog_hash = load_defend_line_surface_catalog()
-    return _validated_themes(_catalog_document(), catalog)
+    return load_surface_themes("defend_the_line_plus")
 
 
 def _requested_ids(
@@ -247,22 +360,29 @@ def _requested_ids(
     return raw_ids
 
 
-def resolve_defend_line_surface_variants(
+def resolve_surface_variants(
+    alias: str,
     requested: Mapping[str, Sequence[str]] | None,
-) -> tuple[Mapping[str, tuple[SurfaceVariant, ...]], str]:
-    catalog, catalog_hash = load_defend_line_surface_catalog()
-    document_roles = _catalog_document()["roles"]
+) -> tuple[Mapping[str, tuple[AppearanceVariant, ...]], str]:
+    catalog, catalog_hash = load_surface_catalog(alias)
+    document = _catalog_document(alias)
+    document_roles = document["roles"]
+    environment = (
+        "Defend the Line"
+        if alias == "defend_the_line_plus"
+        else str(document.get("environment") or "Plus environment")
+    )
     if requested is None:
         requested_by_role: Mapping[str, Sequence[str]] = {}
     elif isinstance(requested, Mapping):
         unknown_roles = sorted(set(requested) - set(catalog))
         if unknown_roles:
-            raise ValueError(f"unknown Defend the Line surface role(s): {unknown_roles}")
+            raise ValueError(f"unknown {environment} surface role(s): {unknown_roles}")
         requested_by_role = requested
     else:
         raise TypeError("surface_variants must be a role mapping")
 
-    selected: dict[str, tuple[SurfaceVariant, ...]] = {}
+    selected: dict[str, tuple[AppearanceVariant, ...]] = {}
     for role, variants in catalog.items():
         by_id = {variant.variant_id: variant for variant in variants}
         raw_ids = _requested_ids(
@@ -276,3 +396,9 @@ def resolve_defend_line_surface_variants(
             raise ValueError(f"unknown {role} surface variant(s): {unknown}; choose from {choices}")
         selected[role] = tuple(by_id[variant_id] for variant_id in raw_ids)
     return MappingProxyType(selected), catalog_hash
+
+
+def resolve_defend_line_surface_variants(
+    requested: Mapping[str, Sequence[str]] | None,
+) -> tuple[Mapping[str, tuple[AppearanceVariant, ...]], str]:
+    return resolve_surface_variants("defend_the_line_plus", requested)

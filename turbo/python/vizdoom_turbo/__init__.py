@@ -23,6 +23,7 @@ try:
 
     for _name, _game in {
         "VizdoomBasic-Turbo-v0": "VizdoomBasic-v1",
+        "VizdoomBasic-Plus-v1": "VizdoomBasic-Plus-v1",
         "VizdoomDeadlyCorridor-Turbo-v0": "VizdoomDeadlyCorridor-v1",
         "VizdoomDefendCenter-Turbo-v0": "VizdoomDefendCenter-v1",
         "VizdoomDefendLine-Turbo-v0": "VizdoomDefendLine-v1",

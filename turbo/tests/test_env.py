@@ -27,6 +27,7 @@ SUPPORTED_SCENARIOS = (
 )
 REGISTERED_TURBO_GAMES = {
     "VizdoomBasic-Turbo-v0": "VizdoomBasic-v1",
+    "VizdoomBasic-Plus-v1": "VizdoomBasic-Plus-v1",
     "VizdoomDeadlyCorridor-Turbo-v0": "VizdoomDeadlyCorridor-v1",
     "VizdoomDefendCenter-Turbo-v0": "VizdoomDefendCenter-v1",
     "VizdoomDefendLine-Turbo-v0": "VizdoomDefendLine-v1",
@@ -39,7 +40,15 @@ REGISTERED_TURBO_GAMES = {
 }
 APPEARANCE_VARIANT_RESET_INFO_KEYS = {
     f"{prefix}{role}_variant_{suffix}"
-    for role in ("shooter", "fighter", "wall", "floor", "ceiling")
+    for role in (
+        "target",
+        "texture_set",
+        "shooter",
+        "fighter",
+        "wall",
+        "floor",
+        "ceiling",
+    )
     for prefix in ("", "_")
     for suffix in ("index", "id")
 }
@@ -151,6 +160,11 @@ def test_public_signature_matches_turbo_constructor_contract() -> None:
         "MOVE_RIGHT",
         "ATTACK",
     )
+    assert scenario_buttons("VizdoomBasic-Plus-v1") == (
+        "MOVE_LEFT",
+        "MOVE_RIGHT",
+        "ATTACK",
+    )
     assert scenario_buttons("VizdoomDefendLine-Plus-v1") == (
         "TURN_LEFT",
         "TURN_RIGHT",
@@ -166,6 +180,158 @@ def test_removed_state_dir_is_rejected() -> None:
     assert "state_dir" not in inspect.signature(VizdoomTurboVecEnv).parameters
     with pytest.raises(TypeError, match="state_dir"):
         VizdoomTurboVecEnv(state_dir="/tmp/states")
+
+
+def test_basic_plus_samples_coherent_texture_sets_and_targets() -> None:
+    common = {
+        "game": "VizdoomBasic-Plus-v1",
+        "num_envs": 16,
+        "num_threads": 4,
+    }
+    left = make_exact_env(**common)
+    right = make_exact_env(**common)
+    try:
+        left_observations, left_infos = left.reset(seed=0)
+        right_observations, right_infos = right.reset(seed=0)
+        np.testing.assert_array_equal(left_observations, right_observations)
+        assert_info_equal(left_infos, right_infos)
+        assert left.enemy_variant_roles == ("target",)
+        assert left.surface_variant_roles == ("texture_set",)
+        assert dict(left.enemy_variants) == {
+            "target": (
+                "original",
+                "basalt-furnace-sentinel-v1",
+                "verdigris-ram-hound-v1",
+            )
+        }
+        assert dict(left.surface_variants) == {
+            "texture_set": (
+                "original",
+                "polar-bunker-v1",
+                "solar-shrine-v1",
+                "verdant-ruin-v1",
+            )
+        }
+        assert set(left.active_enemy_variant_ids()["target"]) == set(
+            left.enemy_variants["target"]
+        )
+        assert set(left.active_surface_variant_ids()["texture_set"]) == set(
+            left.surface_variants["texture_set"]
+        )
+        assert left.active_enemy_variant_ids() == right.active_enemy_variant_ids()
+        assert left.active_surface_variant_ids() == right.active_surface_variant_ids()
+        assert left.capabilities["supports_enemy_variants"] is True
+        assert left.capabilities["supports_surface_variants"] is True
+        assert len(left.enemy_variant_wad_sha256) == 64
+        assert left.surface_variant_wad_sha256 == left.enemy_variant_wad_sha256
+
+        before_enemy_ids = left.active_enemy_variant_ids()
+        before_surface_ids = left.active_surface_variant_ids()
+        mask = np.zeros(left.num_envs, dtype=np.bool_)
+        mask[0] = True
+        _observations, masked_infos = left.reset(
+            seed=[2, *([None] * (left.num_envs - 1))],
+            options={"reset_mask": mask},
+        )
+        assert left.active_enemy_variant_ids()["target"][1:] == before_enemy_ids["target"][1:]
+        assert (
+            left.active_surface_variant_ids()["texture_set"][1:]
+            == before_surface_ids["texture_set"][1:]
+        )
+        assert masked_infos["_target_variant_id"].tolist() == mask.tolist()
+        assert masked_infos["_texture_set_variant_id"].tolist() == mask.tolist()
+    finally:
+        left.close()
+        right.close()
+
+
+def test_basic_plus_original_appearance_is_mechanically_exact() -> None:
+    common = {"num_envs": 2, "num_threads": 2}
+    canonical = make_exact_env(game="VizdoomBasic-v1", **common)
+    plus = make_exact_env(
+        game="VizdoomBasic-Plus-v1",
+        enemy_variants={"target": ["original"]},
+        surface_variants={"texture_set": ["original"]},
+        **common,
+    )
+    try:
+        canonical_observations, canonical_infos = canonical.reset(seed=727)
+        plus_observations, plus_infos = plus.reset(seed=727)
+        np.testing.assert_array_equal(plus_observations, canonical_observations)
+        assert_mechanical_info_equal(plus_infos, canonical_infos)
+
+        actions = np.zeros(2, dtype=np.int64)
+        for _ in range(8):
+            canonical_transition = canonical.step(actions)
+            plus_transition = plus.step(actions)
+            for actual, expected in zip(
+                plus_transition[:4],
+                canonical_transition[:4],
+                strict=True,
+            ):
+                np.testing.assert_array_equal(actual, expected)
+            assert_info_equal(plus_transition[4], canonical_transition[4])
+    finally:
+        canonical.close()
+        plus.close()
+
+
+@pytest.mark.parametrize(
+    ("enemy_id", "texture_set_id"),
+    (
+        ("basalt-furnace-sentinel-v1", "original"),
+        ("verdigris-ram-hound-v1", "original"),
+        ("original", "polar-bunker-v1"),
+        ("original", "solar-shrine-v1"),
+        ("original", "verdant-ruin-v1"),
+    ),
+)
+def test_basic_plus_variants_change_pixels(
+    enemy_id: str,
+    texture_set_id: str,
+) -> None:
+    common = {
+        "game": "VizdoomBasic-Plus-v1",
+        "num_envs": 2,
+        "num_threads": 2,
+        "frame_stack": 1,
+        "frame_skip": 1,
+        "obs_grayscale": False,
+        "obs_layout": "hwc",
+    }
+    original = make_exact_env(
+        enemy_variants={"target": ["original"]},
+        surface_variants={"texture_set": ["original"]},
+        **common,
+    )
+    variant = make_exact_env(
+        enemy_variants={"target": [enemy_id]},
+        surface_variants={"texture_set": [texture_set_id]},
+        **common,
+    )
+    try:
+        original_observations, _original_infos = original.reset(seed=613)
+        variant_observations, variant_infos = variant.reset(seed=613)
+        assert np.any(variant_observations != original_observations)
+        assert variant_infos["target_variant_id"].tolist() == [enemy_id, enemy_id]
+        assert variant_infos["texture_set_variant_id"].tolist() == [
+            texture_set_id,
+            texture_set_id,
+        ]
+        actions = np.zeros(2, dtype=np.int64)
+        for _ in range(8):
+            original_transition = original.step(actions)
+            variant_transition = variant.step(actions)
+            for actual, expected in zip(
+                variant_transition[1:4],
+                original_transition[1:4],
+                strict=True,
+            ):
+                np.testing.assert_array_equal(actual, expected)
+            assert_mechanical_info_equal(variant_transition[4], original_transition[4])
+    finally:
+        original.close()
+        variant.close()
 
 
 def test_defend_line_plus_catalog_is_explicit_and_rejects_invalid_use() -> None:
@@ -570,9 +736,13 @@ def test_defend_line_plus_default_mix_is_seed_reproducible() -> None:
         right.close()
 
 
-def test_defend_line_plus_snapshot_restore_preserves_appearance() -> None:
+@pytest.mark.parametrize(
+    "game",
+    ("VizdoomBasic-Plus-v1", "VizdoomDefendLine-Plus-v1"),
+)
+def test_plus_snapshot_restore_preserves_appearance(game: str) -> None:
     env = make_exact_env(
-        game="VizdoomDefendLine-Plus-v1",
+        game=game,
         num_envs=2,
         num_threads=2,
     )

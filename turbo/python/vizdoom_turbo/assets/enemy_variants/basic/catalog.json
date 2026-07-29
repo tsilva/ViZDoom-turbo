@@ -1,0 +1,51 @@
+{
+  "schema_version": 2,
+  "environment": "VizdoomBasic-Plus-v1",
+  "scenario": {
+    "config": "basic_plus.cfg",
+    "wad": "basic_plus.wad",
+    "wad_sha256": "59c21685e7c62c35fb00583daec2f49a82b4bcc16c1927be12586f7a76b061f1",
+    "acc_revision": "bdb9bc4d2c5aee7ca3ff8da985d73aaf83af0557"
+  },
+  "selection": {
+    "scope": "episode_reset",
+    "distribution": "uniform_per_role",
+    "timing": "before_new_episode",
+    "seed_source": "independent_lane_role_rng"
+  },
+  "roles": {
+    "target": {
+      "selector_cvar": "vizdoom_plus_enemy_variant",
+      "default_variants": [
+        "original",
+        "basalt-furnace-sentinel-v1",
+        "verdigris-ram-hound-v1"
+      ],
+      "variants": [
+        {
+          "id": "original",
+          "decorate_id": "Original",
+          "scenario_index": 0,
+          "actor": "Cacodemon",
+          "sprite": null
+        },
+        {
+          "id": "basalt-furnace-sentinel-v1",
+          "decorate_id": "BasaltFurnaceSentinelV1",
+          "scenario_index": 1,
+          "actor": "VizdoomPlusBasaltFurnaceSentinelV1",
+          "sprite": "BSLT",
+          "manifest": "../defend_the_line/basalt_furnace_sentinel_v1/manifest.json"
+        },
+        {
+          "id": "verdigris-ram-hound-v1",
+          "decorate_id": "VerdigrisRamHoundV1",
+          "scenario_index": 2,
+          "actor": "VizdoomPlusVerdigrisRamHoundV1",
+          "sprite": "VRHD",
+          "manifest": "../defend_the_line/verdigris_ram_hound_v1/manifest.json"
+        }
+      ]
+    }
+  }
+}

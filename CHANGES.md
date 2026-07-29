@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Nothing yet.
+- Add `VizdoomBasic-Plus-v1` with seeded per-lane sampling across reusable
+  target appearances and coordinated wall/floor/ceiling texture sets.
 
 ## 1.3.0.post15 - 2026-07-29
 

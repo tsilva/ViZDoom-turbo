@@ -11,8 +11,16 @@ from typing import Any
 
 DEFEND_LINE_PLUS_GAME = "VizdoomDefendLine-Plus-v1"
 DEFEND_LINE_PLUS_ALIAS = "defend_the_line_plus"
+BASIC_PLUS_GAME = "VizdoomBasic-Plus-v1"
+BASIC_PLUS_ALIAS = "basic_plus"
 _ASSET_ROOT = Path(__file__).resolve().parent / "assets" / "enemy_variants"
-_CATALOG_PATH = _ASSET_ROOT / "defend_the_line" / "catalog.json"
+_PLUS_SCENARIOS = {
+    BASIC_PLUS_ALIAS: (BASIC_PLUS_GAME, _ASSET_ROOT / "basic" / "catalog.json"),
+    DEFEND_LINE_PLUS_ALIAS: (
+        DEFEND_LINE_PLUS_GAME,
+        _ASSET_ROOT / "defend_the_line" / "catalog.json",
+    ),
+}
 _SAFE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]*$")
 _SAFE_ROLE = re.compile(r"^[a-z][a-z0-9_]*$")
 _SAFE_CVAR = re.compile(r"^[a-z_][a-z0-9_]*$")
@@ -31,12 +39,16 @@ class EnemyVariant:
     frames: tuple[tuple[str, Path, str], ...]
 
 
-def is_defend_line_plus(value: str | Path | None) -> bool:
+def plus_scenario_alias(value: str | Path | None) -> str | None:
     normalized = str(value or "").strip().casefold().removesuffix(".cfg")
-    return normalized in {
-        DEFEND_LINE_PLUS_GAME.casefold(),
-        DEFEND_LINE_PLUS_ALIAS,
-    }
+    for alias, (game, _catalog_path) in _PLUS_SCENARIOS.items():
+        if normalized in {game.casefold(), alias}:
+            return alias
+    return None
+
+
+def is_defend_line_plus(value: str | Path | None) -> bool:
+    return plus_scenario_alias(value) == DEFEND_LINE_PLUS_ALIAS
 
 
 def _sha256(path: Path) -> str:
@@ -47,19 +59,27 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _catalog_document() -> dict[str, Any]:
+def _catalog_path(alias: str) -> Path:
     try:
-        document = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
+        return _PLUS_SCENARIOS[alias][1]
+    except KeyError as exc:
+        raise ValueError(f"unknown Plus scenario alias: {alias!r}") from exc
+
+
+def _catalog_document(alias: str) -> dict[str, Any]:
+    catalog_path = _catalog_path(alias)
+    try:
+        document = json.loads(catalog_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"invalid enemy-variant catalog: {_CATALOG_PATH}") from exc
+        raise RuntimeError(f"invalid enemy-variant catalog: {catalog_path}") from exc
     if document.get("schema_version") != 2:
         raise RuntimeError("enemy-variant catalog must use schema_version 2")
     return document
 
 
-def _catalog_asset(relative_path: str, label: str) -> Path:
-    path = (_CATALOG_PATH.parent / relative_path).resolve()
-    root = _CATALOG_PATH.parent.resolve()
+def _catalog_asset(alias: str, relative_path: str, label: str) -> Path:
+    path = (_catalog_path(alias).parent / relative_path).resolve()
+    root = _ASSET_ROOT.resolve()
     if root not in path.parents:
         raise RuntimeError(f"{label} escapes the enemy-variant asset directory")
     if not path.is_file():
@@ -67,22 +87,27 @@ def _catalog_asset(relative_path: str, label: str) -> Path:
     return path
 
 
-def defend_line_plus_scenario() -> tuple[Path, str]:
-    document = _catalog_document()
+def plus_scenario(alias: str) -> tuple[Path, str]:
+    document = _catalog_document(alias)
     raw = document.get("scenario")
     if not isinstance(raw, dict):
         raise RuntimeError("enemy-variant catalog must declare its scenario")
-    config_path = _catalog_asset(str(raw.get("config") or ""), "Plus config")
-    wad_path = _catalog_asset(str(raw.get("wad") or ""), "Plus WAD")
+    config_path = _catalog_asset(alias, str(raw.get("config") or ""), "Plus config")
+    wad_path = _catalog_asset(alias, str(raw.get("wad") or ""), "Plus WAD")
     expected_hash = str(raw.get("wad_sha256") or "")
     if _sha256(wad_path) != expected_hash:
         raise RuntimeError(f"Plus scenario WAD failed integrity check: {wad_path}")
     return config_path, expected_hash
 
 
+def defend_line_plus_scenario() -> tuple[Path, str]:
+    return plus_scenario(DEFEND_LINE_PLUS_ALIAS)
+
+
 def _manifest_frames(
     raw: Mapping[str, Any],
     *,
+    alias: str,
     variant_id: str,
     sprite: str | None,
 ) -> tuple[tuple[str, Path, str], ...]:
@@ -93,7 +118,7 @@ def _manifest_frames(
         return ()
     if not isinstance(raw_manifest, str) or not raw_manifest:
         raise RuntimeError(f"enemy variant {variant_id!r} must declare a manifest")
-    manifest_path = _catalog_asset(raw_manifest, f"{variant_id} manifest")
+    manifest_path = _catalog_asset(alias, raw_manifest, f"{variant_id} manifest")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -121,9 +146,10 @@ def _manifest_frames(
     return tuple(frames)
 
 
-def load_defend_line_catalog(
+def load_enemy_catalog(
+    alias: str,
 ) -> tuple[Mapping[str, tuple[EnemyVariant, ...]], str]:
-    document = _catalog_document()
+    document = _catalog_document(alias)
     raw_roles = document.get("roles")
     if not isinstance(raw_roles, dict) or not raw_roles:
         raise RuntimeError("enemy-variant catalog must contain roles")
@@ -179,7 +205,10 @@ def load_defend_line_catalog(
                     actor=actor,
                     sprite=sprite,
                     frames=_manifest_frames(
-                        raw, variant_id=variant_id, sprite=sprite
+                        raw,
+                        alias=alias,
+                        variant_id=variant_id,
+                        sprite=sprite,
                     ),
                 )
             )
@@ -196,6 +225,11 @@ def load_defend_line_catalog(
         MappingProxyType(resolved_roles),
         hashlib.sha256(canonical).hexdigest(),
     )
+
+
+def load_defend_line_catalog(
+) -> tuple[Mapping[str, tuple[EnemyVariant, ...]], str]:
+    return load_enemy_catalog(DEFEND_LINE_PLUS_ALIAS)
 
 
 def _requested_ids(
@@ -216,22 +250,30 @@ def _requested_ids(
     return raw_ids
 
 
-def resolve_defend_line_variants(
+def resolve_enemy_variants(
+    alias: str,
     requested: Mapping[str, Sequence[str]] | Sequence[str] | None,
 ) -> tuple[Mapping[str, tuple[EnemyVariant, ...]], str]:
-    catalog, catalog_hash = load_defend_line_catalog()
-    document_roles = _catalog_document()["roles"]
+    catalog, catalog_hash = load_enemy_catalog(alias)
+    document = _catalog_document(alias)
+    document_roles = document["roles"]
+    environment = (
+        "Defend the Line"
+        if alias == DEFEND_LINE_PLUS_ALIAS
+        else str(document.get("environment") or "Plus environment")
+    )
     if requested is None:
         requested_by_role: Mapping[str, Sequence[str]] = {}
     elif isinstance(requested, Mapping):
         unknown_roles = sorted(set(requested) - set(catalog))
         if unknown_roles:
-            raise ValueError(f"unknown Defend the Line enemy role(s): {unknown_roles}")
+            raise ValueError(f"unknown {environment} enemy role(s): {unknown_roles}")
         requested_by_role = requested
     elif isinstance(requested, Sequence) and not isinstance(
         requested, (str, bytes, bytearray)
     ):
-        requested_by_role = {"shooter": requested}
+        shorthand_role = "shooter" if "shooter" in catalog else next(iter(catalog))
+        requested_by_role = {shorthand_role: requested}
     else:
         raise TypeError("enemy_variants must be a role mapping or sequence of ids")
 
@@ -251,3 +293,9 @@ def resolve_defend_line_variants(
             )
         selected[role] = tuple(by_id[variant_id] for variant_id in raw_ids)
     return MappingProxyType(selected), catalog_hash
+
+
+def resolve_defend_line_variants(
+    requested: Mapping[str, Sequence[str]] | Sequence[str] | None,
+) -> tuple[Mapping[str, tuple[EnemyVariant, ...]], str]:
+    return resolve_enemy_variants(DEFEND_LINE_PLUS_ALIAS, requested)

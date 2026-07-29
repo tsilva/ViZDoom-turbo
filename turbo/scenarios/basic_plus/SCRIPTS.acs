@@ -1,0 +1,118 @@
+#include "zcommon.acs"
+
+int target_id = 10;
+
+global int 0:reward;
+
+function str TargetClass(void)
+{
+    switch (GetCVar("vizdoom_plus_enemy_variant"))
+    {
+        case 1:
+            return "VizdoomPlusBasaltFurnaceSentinelV1";
+        case 2:
+            return "VizdoomPlusVerdigrisRamHoundV1";
+        default:
+            return "Cacodemon";
+    }
+    return "Cacodemon";
+}
+
+function str WallTexture(void)
+{
+    switch (GetCVar("vizdoom_plus_texture_set"))
+    {
+        case 1:
+            return "POLARW1";
+        case 2:
+            return "SOLARW1";
+        case 3:
+            return "VERDW1";
+        default:
+            return "BRICK9";
+    }
+    return "BRICK9";
+}
+
+function str FloorTexture(void)
+{
+    switch (GetCVar("vizdoom_plus_texture_set"))
+    {
+        case 1:
+            return "POLARF1";
+        case 2:
+            return "SOLARF1";
+        case 3:
+            return "VERDF1";
+        default:
+            return "FLOOR0_1";
+    }
+    return "FLOOR0_1";
+}
+
+function str CeilingTexture(void)
+{
+    switch (GetCVar("vizdoom_plus_texture_set"))
+    {
+        case 1:
+            return "POLARC1";
+        case 2:
+            return "SOLARC1";
+        case 3:
+            return "VERDC1";
+        default:
+            return "FLAT4";
+    }
+    return "FLAT4";
+}
+
+function void ApplyTextureSet(void)
+{
+    ReplaceTextures("BRICK9", WallTexture(), 24);
+    ReplaceTextures("FLOOR0_1", FloorTexture(), 23);
+    ReplaceTextures("FLAT4", CeilingTexture(), 15);
+}
+
+script 1 OPEN
+{
+    ApplyTextureSet();
+    SpawnTarget();
+    reward = 0;
+}
+
+script 2 ENTER
+{
+    TakeInventory("Fist", 1);
+    ACS_Execute(3, 1, 0, 0, 0);
+}
+
+script 3 (void)
+{
+    int bullets = CheckInventory("Clip");
+    while (true)
+    {
+        int t_bullets = CheckInventory("Clip");
+        if (t_bullets < bullets)
+        {
+            reward = reward - 5.0;
+        }
+        bullets = t_bullets;
+        delay(1);
+    }
+}
+
+script 4 (void)
+{
+    reward = reward + 106.0;
+    Exit_Normal(0);
+}
+
+function void SpawnTarget(void)
+{
+    int y = Random(-161.0, 224.0);
+    Spawn(TargetClass(), 0.0, y, 0.0, target_id, 128);
+    SetActorProperty(target_id, APROP_Speed, 0);
+    SetActorProperty(target_id, APROP_Health, 1);
+    Thing_Hate(target_id, 100, 6);
+    SetThingSpecial(target_id, ACS_ExecuteAlways, 4);
+}

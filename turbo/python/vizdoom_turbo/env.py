@@ -26,13 +26,13 @@ from gymnasium.vector.utils import batch_space
 from ._vizdoom_turbo import ActionHistory, ImageProcessor
 from .action_tables import ActionTable, resolve_custom_action
 from .enemy_variants import (
-    defend_line_plus_scenario,
-    is_defend_line_plus,
-    resolve_defend_line_variants,
+    plus_scenario,
+    plus_scenario_alias,
+    resolve_enemy_variants,
 )
 from .surface_variants import (
-    load_defend_line_surface_themes,
-    resolve_defend_line_surface_variants,
+    load_surface_themes,
+    resolve_surface_variants,
 )
 
 _DEFAULT_STATE = "default"
@@ -262,8 +262,9 @@ def _resolve_scenario(game: str | Path | None, scenario: str | Path | None) -> _
     candidate = Path(str(requested)).expanduser()
     if candidate.is_file():
         return _Scenario(candidate.resolve(), None, None)
-    if is_defend_line_plus(requested):
-        config_path, _wad_hash = defend_line_plus_scenario()
+    plus_alias = plus_scenario_alias(requested)
+    if plus_alias is not None:
+        config_path, _wad_hash = plus_scenario(plus_alias)
         return _Scenario(config_path, None, None)
     alias = str(requested).strip().casefold().removesuffix(".cfg")
     if alias in _BUILTIN_SCENARIOS:
@@ -499,24 +500,26 @@ class VizdoomTurboVecEnv(VectorEnv):
         self.closed = False
         self._owner = secrets.token_hex(16)
         requested_scenario = scenario if scenario not in (None, "scenario") else game
-        self._defend_line_plus = is_defend_line_plus(requested_scenario)
-        if self._defend_line_plus:
+        self._plus_scenario = plus_scenario_alias(requested_scenario)
+        if self._plus_scenario is not None:
             (
                 self._enemy_variant_specs,
                 self.enemy_variant_catalog_sha256,
-            ) = resolve_defend_line_variants(enemy_variants)
-            _plus_config, self.enemy_variant_wad_sha256 = defend_line_plus_scenario()
+            ) = resolve_enemy_variants(self._plus_scenario, enemy_variants)
+            _plus_config, self.enemy_variant_wad_sha256 = plus_scenario(
+                self._plus_scenario
+            )
             (
                 self._surface_variant_specs,
                 self.surface_variant_catalog_sha256,
-            ) = resolve_defend_line_surface_variants(surface_variants)
-            self.surface_variant_themes = load_defend_line_surface_themes()
+            ) = resolve_surface_variants(self._plus_scenario, surface_variants)
+            self.surface_variant_themes = load_surface_themes(self._plus_scenario)
             self.surface_variant_wad_sha256 = self.enemy_variant_wad_sha256
         else:
             if enemy_variants is not None:
-                raise ValueError("enemy_variants is only supported by VizdoomDefendLine-Plus-v1")
+                raise ValueError("enemy_variants is only supported by Plus environments")
             if surface_variants is not None:
-                raise ValueError("surface_variants is only supported by VizdoomDefendLine-Plus-v1")
+                raise ValueError("surface_variants is only supported by Plus environments")
             self._enemy_variant_specs = MappingProxyType({})
             self._surface_variant_specs = MappingProxyType({})
             self.surface_variant_themes = MappingProxyType({})
@@ -764,8 +767,8 @@ class VizdoomTurboVecEnv(VectorEnv):
                 "supports_state_catalog": True,
                 "supports_live_snapshots": True,
                 "supports_per_lane_rgb": True,
-                "supports_enemy_variants": self._defend_line_plus,
-                "supports_surface_variants": self._defend_line_plus,
+                "supports_enemy_variants": self._plus_scenario is not None,
+                "supports_surface_variants": self._plus_scenario is not None,
             }
         )
         config_payload = {
@@ -1065,7 +1068,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             path.unlink(missing_ok=True)
 
     def _set_enemy_variants(self, lane_game: Any, scenario_indices: Sequence[int]) -> None:
-        if self._defend_line_plus:
+        if self._plus_scenario is not None:
             if len(scenario_indices) != len(self.enemy_variant_roles):
                 raise RuntimeError("enemy variant role selection is incomplete")
             for role_index, scenario_index in enumerate(scenario_indices):
@@ -1074,7 +1077,7 @@ class VizdoomTurboVecEnv(VectorEnv):
                 lane_game.send_game_command(f"set {selector_cvar} {int(scenario_index)}")
 
     def _set_surface_variants(self, lane_game: Any, scenario_indices: Sequence[int]) -> None:
-        if self._defend_line_plus:
+        if self._plus_scenario is not None:
             if len(scenario_indices) != len(self.surface_variant_roles):
                 raise RuntimeError("surface variant role selection is incomplete")
             for role_index, scenario_index in enumerate(scenario_indices):
@@ -1387,7 +1390,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         infos = self._infos(mask.copy())
         infos["state_index"] = self._active_state_indices.copy()
         infos["_state_index"] = mask.copy()
-        if self._defend_line_plus:
+        if self._plus_scenario is not None:
             active_ids = self.active_enemy_variant_ids()
             for role_index, role in enumerate(self.enemy_variant_roles):
                 infos[f"{role}_variant_index"] = self._active_enemy_variant_indices[

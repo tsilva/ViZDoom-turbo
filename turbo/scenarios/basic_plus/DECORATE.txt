@@ -1,0 +1,72 @@
+ACTOR VizdoomPlusBasaltFurnaceSentinelV1 : DoomImp
+{
+    States
+    {
+    Spawn:
+        BSLT AB 10 A_Look
+        Loop
+    See:
+        BSLT AABBCCAA 3 A_Chase
+        Loop
+    Melee:
+    Missile:
+        BSLT AB 8 A_FaceTarget
+        BSLT C 6 A_TroopAttack
+        Goto See
+    Pain:
+        BSLT A 2
+        BSLT B 2 A_Pain
+        Goto See
+    Death:
+        BSLT C 8
+        BSLT B 8 A_Scream
+        BSLT C 6
+        BSLT A 6 A_NoBlocking
+        BSLT A -1
+        Stop
+    XDeath:
+        BSLT C 5
+        BSLT B 5 A_XScream
+        BSLT C 5
+        BSLT A 5 A_NoBlocking
+        BSLT BCA 5
+        BSLT A -1
+        Stop
+    Raise:
+        BSLT ACCBA 8
+        Goto See
+    }
+}
+
+ACTOR VizdoomPlusVerdigrisRamHoundV1 : Demon
+{
+    States
+    {
+    Spawn:
+        VRHD AB 10 A_Look
+        Loop
+    See:
+        VRHD AABBCCAA 2 Fast A_Chase
+        Loop
+    Melee:
+        VRHD BC 8 Fast A_FaceTarget
+        VRHD C 8 Fast A_SargAttack
+        Goto See
+    Pain:
+        VRHD D 2 Fast
+        VRHD D 2 Fast A_Pain
+        Goto See
+    Death:
+        VRHD D 8
+        VRHD E 8 A_Scream
+        VRHD E 4
+        VRHD F 4 A_NoBlocking
+        VRHD F 4
+        VRHD F -1
+        Stop
+    Raise:
+        VRHD F 5
+        VRHD FFEED 5
+        Goto See
+    }
+}

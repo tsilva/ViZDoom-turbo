@@ -67,6 +67,39 @@ ViZDoom `.cfg` paths.
 ### Augmented environments
 
 Augmented variants use the `<base>-Plus-v<version>` naming convention.
+`VizdoomBasic-Plus-v1` preserves the canonical Basic scenario while sampling
+one target appearance and one coordinated wall/floor/ceiling texture set per
+lane on every reset:
+
+```python
+env = VizdoomTurboVecEnv(
+    "VizdoomBasic-Plus-v1",
+    num_envs=16,
+    enemy_variants={
+        "target": [
+            "original",
+            "basalt-furnace-sentinel-v1",
+            "verdigris-ram-hound-v1",
+        ],
+    },
+    surface_variants={
+        "texture_set": [
+            "original",
+            "polar-bunker-v1",
+            "solar-shrine-v1",
+            "verdant-ruin-v1",
+        ],
+    },
+)
+observations, infos = env.reset(seed=7)
+print(infos["target_variant_id"])
+print(infos["texture_set_variant_id"])
+```
+
+Each non-original texture-set choice changes all three room surfaces together,
+so a lane cannot mix materials from different themes. Omitting either variant
+mapping samples uniformly from every catalog default.
+
 `VizdoomDefendLine-Plus-v1` preserves the canonical Defend the Line mechanics
 while independently selecting one configured appearance for each enemy and
 surface role in every vector lane on every reset:
@@ -132,10 +165,14 @@ In a GradLab environment config, declare the same list under
 Reusable source frames, Doom patch lumps, manifests, proofs, and provenance live
 under `vizdoom_turbo/assets/enemy_variants/`. Seamless 64×64 PLAYPAL surface
 tiles, tiled proofs, prompts, manifests, and provenance live under
-`vizdoom_turbo/assets/surface_variants/`. The packaged Plus WAD is built from the
-editable scenario sources with:
+`vizdoom_turbo/assets/surface_variants/`. The packaged Plus WADs are built from
+the editable scenario sources with:
 
 ```bash
+uv run python scripts/build_basic_plus.py \
+  --acc /absolute/path/to/acc \
+  --acc-include /absolute/path/to/acc/include
+
 uv run python scripts/build_defend_line_plus.py \
   --acc /absolute/path/to/acc \
   --acc-include /absolute/path/to/acc/include
