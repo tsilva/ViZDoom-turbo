@@ -4,6 +4,11 @@
 
 - Nothing yet.
 
+## 1.3.0.post14 - 2026-07-29
+
+- Optimize batched environment throughput.
+- Fix Turbo Python import ordering.
+
 ## 1.3.0.post13 - 2026-07-28
 
 - Add Turbo dependency validation CI.
