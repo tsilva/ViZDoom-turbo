@@ -4,6 +4,11 @@
 
 - Nothing yet.
 
+## 1.3.0.post18 - 2026-07-29
+
+- Optimize rendered RLab throughput.
+- Fix Turbo Python lint.
+
 ## 1.3.0.post17 - 2026-07-29
 
 - Improve ViZDoom surface texture generation.
