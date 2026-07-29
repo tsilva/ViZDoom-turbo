@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "verdant-ruin-ceiling-v1",
+  "display_name": "Verdant Ruin Ceiling",
+  "role": "ceiling",
+  "namespace": "flat",
+  "lump": "VERDC1",
+  "source": {
+    "generation_mode": "built-in imagegen",
+    "generated_image_sha256": "fb7ee237b01872629e8742489b1932c46db0fd82503e9a7a07fa95cf18887a08",
+    "prompt_sha256": "7c1145a508c1584849989c570267a7954b0bc9c2a946a95d425409999a5ac656",
+    "reference_assets": [],
+    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b",
+    "grid": {
+      "rows": 3,
+      "columns": 3,
+      "row": 2,
+      "column": 2,
+      "cell_inset_fraction": 0.02
+    }
+  },
+  "texture": {
+    "png": "texture/VERDC1.png",
+    "png_sha256": "a993e0249fdbd01df1a8957c370a6a557e7898e69015929f6e746d4071144327",
+    "size": [
+      64,
+      64
+    ],
+    "fully_opaque": true,
+    "colors_in_playpal": true,
+    "seamless_left_right": true,
+    "seamless_top_bottom": true
+  },
+  "proof": {
+    "tiled_preview": "proof/tiled-preview.png",
+    "tiled_preview_sha256": "2bef95f42df0322f53689e4b9a4405d007e101d7d441b901d880597e46cfb3d1"
+  },
+  "provenance": {
+    "origin": "Original AI-generated material texture",
+    "postprocess": "Select gutter-inset source grid cell; center crop; Lanczos downsample to 32x32; mirrored 2x2 wrap; nearest PLAYPAL quantization without dithering"
+  },
+  "theme": "verdant-ruin-v1"
+}

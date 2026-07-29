@@ -64,6 +64,90 @@ finally:
 The package accepts canonical registered `Vizdoom...` Gymnasium IDs and
 ViZDoom `.cfg` paths.
 
+### Augmented environments
+
+Augmented variants use the `<base>-Plus-v<version>` naming convention.
+`VizdoomDefendLine-Plus-v1` preserves the canonical Defend the Line mechanics
+while independently selecting one configured appearance for each enemy and
+surface role in every vector lane on every reset:
+
+```python
+env = VizdoomTurboVecEnv(
+    "VizdoomDefendLine-Plus-v1",
+    num_envs=16,
+    enemy_variants={
+        "shooter": [
+            "original",
+            "basalt-furnace-sentinel-v1",
+        ],
+        "fighter": [
+            "original",
+            "verdigris-ram-hound-v1",
+        ],
+    },
+    surface_variants={
+        "wall": [
+            "original",
+            "basalt-blocks-v1",
+            "steel-panels-v1",
+        ],
+        "floor": [
+            "original",
+            "dark-stone-v1",
+        ],
+        "ceiling": [
+            "original",
+            "industrial-grid-v1",
+        ],
+    },
+)
+observations, infos = env.reset(seed=7)
+print(infos["shooter_variant_id"])
+print(infos["fighter_variant_id"])
+print(infos["wall_variant_id"])
+print(infos["floor_variant_id"])
+print(infos["ceiling_variant_id"])
+```
+
+Selection is uniform within each configured role, reproducible under
+`reset(seed=...)`, and driven by separate role RNG streams so it does not consume
+gameplay, no-op, sticky-action, or another role's randomness. Omit
+`enemy_variants` and `surface_variants` to use every role's catalog defaults. An
+`enemy_variants` sequence remains a shorthand for configuring the shooter role
+only. Masked resets resample selected lanes only. `enemy_variant_roles` and
+`surface_variant_roles`, their read-only two-dimensional active-index arrays,
+and the role-keyed `active_enemy_variant_ids()` and
+`active_surface_variant_ids()` mappings expose the current choices.
+
+The surface catalog also exposes three image-generated, coordinated sets through
+the immutable `surface_variant_themes` mapping: `polar-bunker-v1`,
+`solar-shrine-v1`, and `verdant-ruin-v1`. Each maps to one matching wall, floor,
+and ceiling id produced from the same source-grid row. Role selection remains
+independent, so configure each role with the corresponding singleton id when a
+reset must use one intact visual theme.
+
+In a GradLab environment config, declare the same list under
+`env_config.env_args.enemy_variants` or `env_config.env_args.surface_variants`.
+
+Reusable source frames, Doom patch lumps, manifests, proofs, and provenance live
+under `vizdoom_turbo/assets/enemy_variants/`. Seamless 64×64 PLAYPAL surface
+tiles, tiled proofs, prompts, manifests, and provenance live under
+`vizdoom_turbo/assets/surface_variants/`. The packaged Plus WAD is built from the
+editable scenario sources with:
+
+```bash
+uv run python scripts/build_defend_line_plus.py \
+  --acc /absolute/path/to/acc \
+  --acc-include /absolute/path/to/acc/include
+```
+
+New generated surface sources can be normalized into a compatible tile with
+`scripts/process_surface_variant.py`; its manifest gate verifies opacity,
+palette membership, exact dimensions, and matching opposite edges. The script
+can also select gutter-inset cells from a generated grid with `--grid-row` and
+`--grid-column`; the source and processed 3×3 theme grids live with the editable
+Defend the Line Plus scenario sources.
+
 ## Turbo Vector API v1
 
 `VizdoomTurboVecEnv` implements the strict Turbo Vector API v1:

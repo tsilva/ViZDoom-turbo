@@ -25,6 +25,15 @@ from gymnasium.vector.utils import batch_space
 
 from ._vizdoom_turbo import ActionHistory, ImageProcessor
 from .action_tables import ActionTable, resolve_custom_action
+from .enemy_variants import (
+    defend_line_plus_scenario,
+    is_defend_line_plus,
+    resolve_defend_line_variants,
+)
+from .surface_variants import (
+    load_defend_line_surface_themes,
+    resolve_defend_line_surface_variants,
+)
 
 _DEFAULT_STATE = "default"
 _BUILTIN_SCENARIOS = {
@@ -99,9 +108,7 @@ class _LanePool:
             self._completed_workers = 0
             self._generation += 1
             self._condition.notify_all()
-            self._condition.wait_for(
-                lambda: self._completed_workers == self._num_threads
-            )
+            self._condition.wait_for(lambda: self._completed_workers == self._num_threads)
             results = self._results
             errors = self._errors
             self._jobs = ()
@@ -165,9 +172,7 @@ def _normalize_pair(value: Any, name: str) -> tuple[int, int] | None:
         height, width = value
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name} must be a (height, width) pair") from exc
-    return _positive_int(height, f"{name} height"), _positive_int(
-        width, f"{name} width"
-    )
+    return _positive_int(height, f"{name} height"), _positive_int(width, f"{name} width")
 
 
 def _normalize_crop(value: Any) -> tuple[int, int, int, int]:
@@ -219,6 +224,26 @@ def _normalize_seed(
     return [base + lane for lane in range(num_envs)]
 
 
+def _enemy_variant_rng(seed: int, role: str) -> np.random.Generator:
+    """Return an RNG lane isolated from gameplay/no-op/sticky-action draws."""
+    value = int(seed) & np.iinfo(np.uint64).max
+    domain = int.from_bytes(hashlib.sha256(role.encode("utf-8")).digest()[:4], "little")
+    sequence = np.random.SeedSequence(
+        [value & np.iinfo(np.uint32).max, value >> 32, 0x56445A50, domain]
+    )
+    return np.random.default_rng(sequence)
+
+
+def _surface_variant_rng(seed: int, role: str) -> np.random.Generator:
+    """Return a surface-role RNG isolated from every other reset draw."""
+    value = int(seed) & np.iinfo(np.uint64).max
+    domain = int.from_bytes(hashlib.sha256(role.encode("utf-8")).digest()[:4], "little")
+    sequence = np.random.SeedSequence(
+        [value & np.iinfo(np.uint32).max, value >> 32, 0x53524643, domain]
+    )
+    return np.random.default_rng(sequence)
+
+
 def _enum_name(value: Any) -> str:
     return str(getattr(value, "name", value)).split(".")[-1]
 
@@ -230,20 +255,19 @@ class _Scenario:
     doom_skill: int | None
 
 
-def _resolve_scenario(
-    game: str | Path | None, scenario: str | Path | None
-) -> _Scenario:
+def _resolve_scenario(game: str | Path | None, scenario: str | Path | None) -> _Scenario:
     requested = scenario if scenario not in (None, "scenario") else game
     if requested is None:
         requested = "VizdoomBasic-v1"
     candidate = Path(str(requested)).expanduser()
     if candidate.is_file():
         return _Scenario(candidate.resolve(), None, None)
+    if is_defend_line_plus(requested):
+        config_path, _wad_hash = defend_line_plus_scenario()
+        return _Scenario(config_path, None, None)
     alias = str(requested).strip().casefold().removesuffix(".cfg")
     if alias in _BUILTIN_SCENARIOS:
-        return _Scenario(
-            Path(vzd.scenarios_path) / _BUILTIN_SCENARIOS[alias], None, None
-        )
+        return _Scenario(Path(vzd.scenarios_path) / _BUILTIN_SCENARIOS[alias], None, None)
     try:
         import vizdoom.gymnasium_wrapper  # noqa: F401
 
@@ -256,9 +280,7 @@ def _resolve_scenario(
         ) from exc
     config_name = spec.kwargs.get("scenario_config_file")
     if not config_name:
-        raise ValueError(
-            f"Gymnasium environment {requested!r} is not a ViZDoom scenario"
-        )
+        raise ValueError(f"Gymnasium environment {requested!r} is not a ViZDoom scenario")
     return _Scenario(
         Path(vzd.scenarios_path) / str(config_name),
         str(spec.kwargs["doom_map"]) if spec.kwargs.get("doom_map") else None,
@@ -287,36 +309,28 @@ class _StateAsset:
     payload: bytes | None
 
 
-def _state_asset(value: Any, state_dir: Path | None) -> _StateAsset:
+def _state_asset(value: Any) -> _StateAsset:
     if value is None or str(value).strip().casefold() in {"", "default", "none"}:
         return _StateAsset(_DEFAULT_STATE, None)
     if isinstance(value, (bytes, bytearray, memoryview)):
         payload = bytes(value)
         return _StateAsset(f"sha256:{hashlib.sha256(payload).hexdigest()}", payload)
     path = Path(value).expanduser()
-    candidates = [path]
-    if state_dir is not None and not path.is_absolute():
-        candidates.extend(
-            state_dir / f"{path}{suffix}" for suffix in ("", ".zds", ".save", ".png")
-        )
-    for candidate in candidates:
-        if candidate.is_file():
-            payload = candidate.read_bytes()
-            return _StateAsset(str(value), payload)
+    if path.is_file():
+        payload = path.read_bytes()
+        return _StateAsset(str(value), payload)
     raise FileNotFoundError(f"ViZDoom state {value!r} is not a readable save file")
 
 
 def _resolve_state_catalog(
     state: Any,
     state_catalog: Sequence[Any] | None,
-    state_dir: str | Path | None,
 ) -> tuple[tuple[_StateAsset, ...], int]:
-    root = Path(state_dir).expanduser().resolve() if state_dir is not None else None
-    requested = _state_asset(state, root)
+    requested = _state_asset(state)
     values = (state,) if state_catalog is None else tuple(state_catalog)
     if not values:
         values = (_DEFAULT_STATE,)
-    assets = tuple(_state_asset(value, root) for value in values)
+    assets = tuple(_state_asset(value) for value in values)
     labels = tuple(asset.label for asset in assets)
     if len(set(labels)) != len(labels):
         raise ValueError("state_catalog must contain unique state labels")
@@ -332,6 +346,8 @@ class _EpisodeOrigin:
     game_seed: int
     state_index: int
     noop_count: int
+    enemy_variant_indices: tuple[int, ...]
+    surface_variant_indices: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -344,6 +360,8 @@ class _LiveSnapshot:
     stack_head: int
     raw_frame: np.ndarray
     rng_state: dict[str, Any]
+    enemy_variant_rng_states: tuple[dict[str, Any], ...]
+    surface_variant_rng_states: tuple[dict[str, Any], ...]
     last_action: np.ndarray
     state_index: int
     episode_return: float
@@ -353,9 +371,7 @@ class _LiveSnapshot:
         return self.action_history.nbytes + self.stack.nbytes + self.raw_frame.nbytes
 
     def __reduce__(self):
-        raise TypeError(
-            "live ViZDoom snapshots are session-local and cannot be pickled"
-        )
+        raise TypeError("live ViZDoom snapshots are session-local and cannot be pickled")
 
 
 class VizdoomTurboVecEnv(VectorEnv):
@@ -411,11 +427,12 @@ class VizdoomTurboVecEnv(VectorEnv):
         reward_clip: bool | tuple[float, float] = False,
         info_filter: str | Mapping[str, Any] = "all",
         state_catalog: Sequence[Any] | None = None,
-        state_dir: str | Path | None = None,
         doom_map: str | None = None,
         doom_skill: int | None = None,
         game_args: str | None = None,
         game_variables: Sequence[str] | None = None,
+        enemy_variants: Mapping[str, Sequence[str]] | Sequence[str] | None = None,
+        surface_variants: Mapping[str, Sequence[str]] | None = None,
         treat_episode_timeout_as_truncation: bool = True,
         vizdoom_config: Mapping[str, Any] | None = None,
         **unsupported: Any,
@@ -423,9 +440,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         if unsupported:
             raise TypeError(f"unsupported option(s): {', '.join(sorted(unsupported))}")
         if info not in (None, "data"):
-            raise ValueError(
-                "info must be None/'data'; use game_variables for ViZDoom signals"
-            )
+            raise ValueError("info must be None/'data'; use game_variables for ViZDoom signals")
         if record:
             raise ValueError("record=True is unsupported on the native vector path")
         if players != 1:
@@ -460,12 +475,12 @@ class VizdoomTurboVecEnv(VectorEnv):
         self.observation_ownership = (
             "owned"
             if self.obs_copy == "copy"
-            else "unsafe_view" if self.obs_copy == "unsafe_view" else "safe_view"
+            else "unsafe_view"
+            if self.obs_copy == "unsafe_view"
+            else "safe_view"
         )
         self.observation_buffer_depth = (
-            None
-            if self.obs_copy == "copy"
-            else 1 if self.obs_copy == "unsafe_view" else 2
+            None if self.obs_copy == "copy" else 1 if self.obs_copy == "unsafe_view" else 2
         )
         self.obs_crop = _normalize_crop(obs_crop)
         self.obs_crop_mode = str(obs_crop_mode).casefold()
@@ -476,29 +491,61 @@ class VizdoomTurboVecEnv(VectorEnv):
             raise ValueError("obs_crop_fill must be in [0, 255]")
         self.obs_resize_algorithm = str(obs_resize_algorithm).casefold()
         if self.obs_resize_algorithm not in {"nearest", "bilinear", "area"}:
-            raise ValueError(
-                "obs_resize_algorithm must be 'nearest', 'bilinear', or 'area'"
-            )
-        self.treat_episode_timeout_as_truncation = bool(
-            treat_episode_timeout_as_truncation
-        )
+            raise ValueError("obs_resize_algorithm must be 'nearest', 'bilinear', or 'area'")
+        self.treat_episode_timeout_as_truncation = bool(treat_episode_timeout_as_truncation)
         self.game = str(game or "VizdoomBasic-v1")
         self.render_mode = render_mode
         self.autoreset_mode = AutoresetMode.DISABLED
         self.closed = False
         self._owner = secrets.token_hex(16)
+        requested_scenario = scenario if scenario not in (None, "scenario") else game
+        self._defend_line_plus = is_defend_line_plus(requested_scenario)
+        if self._defend_line_plus:
+            (
+                self._enemy_variant_specs,
+                self.enemy_variant_catalog_sha256,
+            ) = resolve_defend_line_variants(enemy_variants)
+            _plus_config, self.enemy_variant_wad_sha256 = defend_line_plus_scenario()
+            (
+                self._surface_variant_specs,
+                self.surface_variant_catalog_sha256,
+            ) = resolve_defend_line_surface_variants(surface_variants)
+            self.surface_variant_themes = load_defend_line_surface_themes()
+            self.surface_variant_wad_sha256 = self.enemy_variant_wad_sha256
+        else:
+            if enemy_variants is not None:
+                raise ValueError("enemy_variants is only supported by VizdoomDefendLine-Plus-v1")
+            if surface_variants is not None:
+                raise ValueError("surface_variants is only supported by VizdoomDefendLine-Plus-v1")
+            self._enemy_variant_specs = MappingProxyType({})
+            self._surface_variant_specs = MappingProxyType({})
+            self.surface_variant_themes = MappingProxyType({})
+            self.enemy_variant_catalog_sha256 = None
+            self.enemy_variant_wad_sha256 = None
+            self.surface_variant_catalog_sha256 = None
+            self.surface_variant_wad_sha256 = None
+        self.enemy_variant_roles = tuple(self._enemy_variant_specs)
+        self.enemy_variants = MappingProxyType(
+            {
+                role: tuple(variant.variant_id for variant in variants)
+                for role, variants in self._enemy_variant_specs.items()
+            }
+        )
+        self.surface_variant_roles = tuple(self._surface_variant_specs)
+        self.surface_variants = MappingProxyType(
+            {
+                role: tuple(variant.variant_id for variant in variants)
+                for role, variants in self._surface_variant_specs.items()
+            }
+        )
         self._scenario = _resolve_scenario(game, scenario)
         self._doom_map = doom_map or self._scenario.doom_map
-        self._doom_skill = (
-            int(doom_skill) if doom_skill is not None else self._scenario.doom_skill
-        )
+        self._doom_skill = int(doom_skill) if doom_skill is not None else self._scenario.doom_skill
         self._game_args = game_args
         self._rom_path = rom_path
         self._vizdoom_config = dict(vizdoom_config or {})
         self._requested_game_variables = tuple(game_variables or ())
-        self._assets, self._default_state_index = _resolve_state_catalog(
-            state, state_catalog, state_dir
-        )
+        self._assets, self._default_state_index = _resolve_state_catalog(state, state_catalog)
         self.state_catalog = tuple(asset.label for asset in self._assets)
         self._native_stepper_type = getattr(vzd, "_TurboBatchStepper", None)
         native_stepper_available = self._native_stepper_type is not None and all(
@@ -534,17 +581,12 @@ class VizdoomTurboVecEnv(VectorEnv):
             self.raw_width = int(template.get_screen_width())
             self.raw_height = int(template.get_screen_height())
             self._use_indexed_native = (
-                self._use_indexed_native
-                and self.raw_width == 320
-                and self.raw_height == 240
+                self._use_indexed_native and self.raw_width == 320 and self.raw_height == 240
             )
             self._button_enums = tuple(template.get_available_buttons())
             self.buttons = tuple(_enum_name(button) for button in self._button_enums)
             self._binary = np.asarray(
-                [
-                    int(button.value) < int(vzd.BINARY_BUTTON_COUNT)
-                    for button in self._button_enums
-                ],
+                [int(button.value) < int(vzd.BINARY_BUTTON_COUNT) for button in self._button_enums],
                 dtype=np.bool_,
             )
             self._game_variables = tuple(template.get_available_game_variables())
@@ -579,12 +621,8 @@ class VizdoomTurboVecEnv(VectorEnv):
             if self.obs_layout == "chw"
             else (self.obs_height, self.obs_width, stacked_channels)
         )
-        self.single_observation_space = gym.spaces.Box(
-            0, 255, shape=single_shape, dtype=np.uint8
-        )
-        self.observation_space = batch_space(
-            self.single_observation_space, self.num_envs
-        )
+        self.single_observation_space = gym.spaces.Box(0, 255, shape=single_shape, dtype=np.uint8)
+        self.observation_space = batch_space(self.single_observation_space, self.num_envs)
         self._stack = np.zeros(
             (
                 self.num_envs,
@@ -613,17 +651,12 @@ class VizdoomTurboVecEnv(VectorEnv):
         )
         raw_shape = (self.raw_height, self.raw_width, 3)
         self._raw_frame_batch = np.zeros((self.num_envs, *raw_shape), dtype=np.uint8)
-        self._raw_frames = [
-            self._raw_frame_batch[lane] for lane in range(self.num_envs)
-        ]
+        self._raw_frames = [self._raw_frame_batch[lane] for lane in range(self.num_envs)]
         self._previous_raw_batch = np.zeros((self.num_envs, *raw_shape), dtype=np.uint8)
-        self._previous_raw = [
-            self._previous_raw_batch[lane] for lane in range(self.num_envs)
-        ]
+        self._previous_raw = [self._previous_raw_batch[lane] for lane in range(self.num_envs)]
         buffer_count = 1 if self.obs_copy == "unsafe_view" else 2
         self._obs_buffers = [
-            np.empty((self.num_envs, *single_shape), dtype=np.uint8)
-            for _ in range(buffer_count)
+            np.empty((self.num_envs, *single_shape), dtype=np.uint8) for _ in range(buffer_count)
         ]
         self._reward_buffers = [
             np.empty(self.num_envs, dtype=np.float32) for _ in range(buffer_count)
@@ -643,16 +676,44 @@ class VizdoomTurboVecEnv(VectorEnv):
             self.num_envs, self._default_state_index, dtype=np.int32
         )
         self._active_state_indices.setflags(write=False)
+        self._active_enemy_variant_indices = np.full(
+            (self.num_envs, len(self.enemy_variant_roles)), -1, dtype=np.int32
+        )
+        self._active_enemy_variant_indices.setflags(write=False)
+        self._active_surface_variant_indices = np.full(
+            (self.num_envs, len(self.surface_variant_roles)), -1, dtype=np.int32
+        )
+        self._active_surface_variant_indices.setflags(write=False)
+        self._enemy_variant_by_scenario_index = tuple(
+            {variant.scenario_index: variant for variant in self._enemy_variant_specs[role]}
+            for role in self.enemy_variant_roles
+        )
+        self._surface_variant_by_scenario_index = tuple(
+            {variant.scenario_index: variant for variant in self._surface_variant_specs[role]}
+            for role in self.surface_variant_roles
+        )
         self._episode_returns = np.zeros(self.num_envs, dtype=np.float64)
         self._episode_origins = [
-            _EpisodeOrigin(lane, self._default_state_index, 0)
+            _EpisodeOrigin(
+                lane,
+                self._default_state_index,
+                0,
+                (-1,) * len(self.enemy_variant_roles),
+                (-1,) * len(self.surface_variant_roles),
+            )
             for lane in range(self.num_envs)
         ]
         self._action_history = ActionHistory(self.num_envs, len(self._button_enums))
-        self._last_actions = np.zeros(
-            (self.num_envs, len(self._button_enums)), dtype=np.float64
-        )
+        self._last_actions = np.zeros((self.num_envs, len(self._button_enums)), dtype=np.float64)
         self._rngs = [np.random.default_rng(lane) for lane in range(self.num_envs)]
+        self._enemy_variant_rngs = [
+            [_enemy_variant_rng(lane, role) for lane in range(self.num_envs)]
+            for role in self.enemy_variant_roles
+        ]
+        self._surface_variant_rngs = [
+            [_surface_variant_rng(lane, role) for lane in range(self.num_envs)]
+            for role in self.surface_variant_roles
+        ]
         self._seed_values = [None] * self.num_envs
         self._options = [None] * self.num_envs
         self._signal_names = (
@@ -662,9 +723,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             "player_dead",
             "pending_reset",
         )
-        self._signals = np.zeros(
-            (self.num_envs, len(self._signal_names)), dtype=np.float64
-        )
+        self._signals = np.zeros((self.num_envs, len(self._signal_names)), dtype=np.float64)
         self._all_info_present = np.ones(self.num_envs, dtype=np.bool_)
         self._configure_info_filter(info_filter)
         self.signal_schema = MappingProxyType(
@@ -705,6 +764,8 @@ class VizdoomTurboVecEnv(VectorEnv):
                 "supports_state_catalog": True,
                 "supports_live_snapshots": True,
                 "supports_per_lane_rgb": True,
+                "supports_enemy_variants": self._defend_line_plus,
+                "supports_surface_variants": self._defend_line_plus,
             }
         )
         config_payload = {
@@ -720,6 +781,12 @@ class VizdoomTurboVecEnv(VectorEnv):
             "resize": (self.obs_height, self.obs_width),
             "grayscale": self.obs_grayscale,
             "layout": self.obs_layout,
+            "enemy_variants": dict(self.enemy_variants),
+            "enemy_variant_catalog_sha256": self.enemy_variant_catalog_sha256,
+            "enemy_variant_wad_sha256": self.enemy_variant_wad_sha256,
+            "surface_variants": dict(self.surface_variants),
+            "surface_variant_catalog_sha256": self.surface_variant_catalog_sha256,
+            "surface_variant_wad_sha256": self.surface_variant_wad_sha256,
         }
         self._config_hash = hashlib.sha256(
             json.dumps(config_payload, sort_keys=True).encode("utf-8")
@@ -768,8 +835,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             self._native_indexed_storage = self._native_indexed_frames
             self._native_palette_storage = self._native_palettes
             self._native_indexed_frames = tuple(
-                self._native_stepper.indexed_frame_view(lane)
-                for lane in range(self.num_envs)
+                self._native_stepper.indexed_frame_view(lane) for lane in range(self.num_envs)
             )
             self._native_palettes = tuple(
                 self._native_stepper.palette_view(lane) for lane in range(self.num_envs)
@@ -777,9 +843,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             native_api = self._native_stepper.native_api()
             self._native_api = native_api[:5]
             self._native_reset_api = native_api[5] if len(native_api) >= 6 else None
-            self._native_stack_lanes = tuple(
-                self._stack[lane] for lane in range(self.num_envs)
-            )
+            self._native_stack_lanes = tuple(self._stack[lane] for lane in range(self.num_envs))
             self._native_head_lanes = tuple(
                 self._stack_heads[lane : lane + 1] for lane in range(self.num_envs)
             )
@@ -788,9 +852,7 @@ class VizdoomTurboVecEnv(VectorEnv):
                 for buffer in self._obs_buffers
             }
             self._active_native_observation_lanes = ()
-            self._native_jobs = [
-                (self._step_native_lane, (lane,)) for lane in range(self.num_envs)
-            ]
+            self._native_jobs = [(self._step_native_lane, (lane,)) for lane in range(self.num_envs)]
 
     def _new_game(self):
         game = vzd.DoomGame()
@@ -859,9 +921,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             return
         if np.any(~self._binary):
             binary_names = tuple(
-                name
-                for name, binary in zip(self.buttons, self._binary, strict=True)
-                if binary
+                name for name, binary in zip(self.buttons, self._binary, strict=True) if binary
             )
         else:
             binary_names = self.buttons
@@ -906,16 +966,10 @@ class VizdoomTurboVecEnv(VectorEnv):
         self._collect_game_variables = mode != "none" and any(
             key in self.game_variable_names for key in self._info_keys
         )
-        self._collect_episode_time = (
-            mode != "none" and "episode_time" in self._info_keys
-        )
-        self._collect_episode_return = (
-            mode != "none" and "episode_return" in self._info_keys
-        )
+        self._collect_episode_time = mode != "none" and "episode_time" in self._info_keys
+        self._collect_episode_return = mode != "none" and "episode_return" in self._info_keys
         self._collect_player_dead = mode != "none" and "player_dead" in self._info_keys
-        self._collect_pending_reset = (
-            mode != "none" and "pending_reset" in self._info_keys
-        )
+        self._collect_pending_reset = mode != "none" and "pending_reset" in self._info_keys
         self._collect_derived_signals = any(
             (
                 self._collect_episode_time,
@@ -945,9 +999,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         screen = np.asarray(state.screen_buffer, dtype=np.uint8)
         expected = (self.raw_height, self.raw_width, 3)
         if screen.shape != expected:
-            raise RuntimeError(
-                f"ViZDoom returned screen shape {screen.shape}; expected {expected}"
-            )
+            raise RuntimeError(f"ViZDoom returned screen shape {screen.shape}; expected {expected}")
         return np.ascontiguousarray(screen)
 
     def _raw_signals(self, lane_game: Any) -> np.ndarray | None:
@@ -1012,6 +1064,24 @@ class VizdoomTurboVecEnv(VectorEnv):
         finally:
             path.unlink(missing_ok=True)
 
+    def _set_enemy_variants(self, lane_game: Any, scenario_indices: Sequence[int]) -> None:
+        if self._defend_line_plus:
+            if len(scenario_indices) != len(self.enemy_variant_roles):
+                raise RuntimeError("enemy variant role selection is incomplete")
+            for role_index, scenario_index in enumerate(scenario_indices):
+                variants = self._enemy_variant_specs[self.enemy_variant_roles[role_index]]
+                selector_cvar = variants[0].selector_cvar
+                lane_game.send_game_command(f"set {selector_cvar} {int(scenario_index)}")
+
+    def _set_surface_variants(self, lane_game: Any, scenario_indices: Sequence[int]) -> None:
+        if self._defend_line_plus:
+            if len(scenario_indices) != len(self.surface_variant_roles):
+                raise RuntimeError("surface variant role selection is incomplete")
+            for role_index, scenario_index in enumerate(scenario_indices):
+                variants = self._surface_variant_specs[self.surface_variant_roles[role_index]]
+                selector_cvar = variants[0].selector_cvar
+                lane_game.send_game_command(f"set {selector_cvar} {int(scenario_index)}")
+
     def _reset_lane(
         self,
         lane: int,
@@ -1019,8 +1089,12 @@ class VizdoomTurboVecEnv(VectorEnv):
         asset: _StateAsset | None,
         snapshot: _LiveSnapshot | None,
         noop_count: int,
+        enemy_variant_indices: Sequence[int],
+        surface_variant_indices: Sequence[int],
     ) -> tuple[np.ndarray, np.ndarray]:
         lane_game = self._games[lane]
+        self._set_enemy_variants(lane_game, enemy_variant_indices)
+        self._set_surface_variants(lane_game, surface_variant_indices)
         if snapshot is not None:
             origin = snapshot.origin
             lane_game.set_seed(origin.game_seed)
@@ -1077,9 +1151,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         if not isinstance(mask, np.ndarray):
             raise TypeError("options['reset_mask'] must be a NumPy array")
         if mask.shape != (self.num_envs,):
-            raise ValueError(
-                f"options['reset_mask'] must have shape ({self.num_envs},)"
-            )
+            raise ValueError(f"options['reset_mask'] must have shape ({self.num_envs},)")
         if mask.dtype != np.bool_:
             raise TypeError("options['reset_mask'] must have dtype np.bool_")
         if not np.any(mask):
@@ -1095,35 +1167,25 @@ class VizdoomTurboVecEnv(VectorEnv):
             ):
                 raise TypeError("options['snapshots'] must be a lane-aligned sequence")
             if len(snapshots) != self.num_envs:
-                raise ValueError(
-                    f"options['snapshots'] must have length {self.num_envs}"
-                )
+                raise ValueError(f"options['snapshots'] must have length {self.num_envs}")
             snapshot_values = list(snapshots)
-        snapshot_mask = np.asarray(
-            [value is not None for value in snapshot_values], dtype=np.bool_
-        )
+        snapshot_mask = np.asarray([value is not None for value in snapshot_values], dtype=np.bool_)
         if np.any(snapshot_mask & ~mask):
             raise ValueError("snapshots may only be supplied for selected reset lanes")
         for value in (item for item in snapshot_values if item is not None):
             if not isinstance(value, _LiveSnapshot):
                 raise TypeError("snapshot values must come from capture_snapshots()")
             if value.owner != self._owner or value.config_hash != self._config_hash:
-                raise ValueError(
-                    "snapshot belongs to a different environment instance/config"
-                )
+                raise ValueError("snapshot belongs to a different environment instance/config")
 
         state_indices = reset_options.pop("state_indices", None)
         if state_indices is None:
-            state_indices = np.full(
-                self.num_envs, self._default_state_index, dtype=np.int32
-            )
+            state_indices = np.full(self.num_envs, self._default_state_index, dtype=np.int32)
             state_indices[snapshot_mask] = -1
         if not isinstance(state_indices, np.ndarray):
             raise TypeError("options['state_indices'] must be a NumPy array")
         if state_indices.shape != (self.num_envs,):
-            raise ValueError(
-                f"options['state_indices'] must have shape ({self.num_envs},)"
-            )
+            raise ValueError(f"options['state_indices'] must have shape ({self.num_envs},)")
         if state_indices.dtype != np.int32:
             raise TypeError("options['state_indices'] must have dtype np.int32")
         static_mask = mask & ~snapshot_mask
@@ -1138,18 +1200,24 @@ class VizdoomTurboVecEnv(VectorEnv):
             raise ValueError(f"unsupported reset options: {sorted(reset_options)}")
 
         seeds = (
-            _normalize_seed(seed, self.num_envs)
-            if seed is not None
-            else list(self._seed_values)
+            _normalize_seed(seed, self.num_envs) if seed is not None else list(self._seed_values)
         )
         if any(seeds[lane] is not None for lane in np.flatnonzero(snapshot_mask)):
             raise ValueError("snapshot reset lanes cannot also specify a seed")
         noop_counts = np.zeros(self.num_envs, dtype=np.int64)
+        enemy_variant_indices = self._active_enemy_variant_indices.copy()
+        surface_variant_indices = self._active_surface_variant_indices.copy()
         game_seeds: list[int | None] = [None] * self.num_envs
         for lane in static_lanes:
             lane_seed = seeds[lane]
             if lane_seed is not None:
                 self._rngs[lane] = np.random.default_rng(lane_seed)
+                for role_index, role in enumerate(self.enemy_variant_roles):
+                    self._enemy_variant_rngs[role_index][lane] = _enemy_variant_rng(lane_seed, role)
+                for role_index, role in enumerate(self.surface_variant_roles):
+                    self._surface_variant_rngs[role_index][lane] = _surface_variant_rng(
+                        lane_seed, role
+                    )
             game_seeds[lane] = int(
                 self._rngs[lane].integers(
                     0,
@@ -1158,21 +1226,41 @@ class VizdoomTurboVecEnv(VectorEnv):
                 )
             )
             if self.noop_reset_max:
-                noop_counts[lane] = self._rngs[lane].integers(
-                    1, self.noop_reset_max + 1
+                noop_counts[lane] = self._rngs[lane].integers(1, self.noop_reset_max + 1)
+            for role_index, role in enumerate(self.enemy_variant_roles):
+                variants = self._enemy_variant_specs[role]
+                selection = int(
+                    self._enemy_variant_rngs[role_index][lane].integers(0, len(variants))
                 )
+                enemy_variant_indices[lane, role_index] = variants[selection].scenario_index
+            for role_index, role in enumerate(self.surface_variant_roles):
+                variants = self._surface_variant_specs[role]
+                selection = int(
+                    self._surface_variant_rngs[role_index][lane].integers(0, len(variants))
+                )
+                surface_variant_indices[lane, role_index] = variants[selection].scenario_index
+        for lane in np.flatnonzero(snapshot_mask):
+            snapshot = snapshot_values[int(lane)]
+            if snapshot is not None:
+                enemy_variant_indices[lane] = snapshot.origin.enemy_variant_indices
+                surface_variant_indices[lane] = snapshot.origin.surface_variant_indices
         native_static_reset = (
             self._native_stepper is not None
             and self._native_reset_api is not None
             and not np.any(snapshot_mask)
             and not np.any(noop_counts[static_mask])
-            and all(
-                self._assets[int(state_indices[lane])].payload is None
-                for lane in static_lanes
-            )
+            and all(self._assets[int(state_indices[lane])].payload is None for lane in static_lanes)
         )
         if native_static_reset:
             for lane in static_lanes:
+                self._set_enemy_variants(
+                    self._games[int(lane)],
+                    enemy_variant_indices[lane],
+                )
+                self._set_surface_variants(
+                    self._games[int(lane)],
+                    surface_variant_indices[lane],
+                )
                 self._native_reset_seeds[lane] = game_seeds[lane]
         else:
             reset_lanes = []
@@ -1181,9 +1269,7 @@ class VizdoomTurboVecEnv(VectorEnv):
                 lane_index = int(lane)
                 snapshot = snapshot_values[lane_index]
                 asset = (
-                    None
-                    if snapshot is not None
-                    else self._assets[int(state_indices[lane_index])]
+                    None if snapshot is not None else self._assets[int(state_indices[lane_index])]
                 )
                 reset_lanes.append(lane_index)
                 reset_jobs.append(
@@ -1195,6 +1281,8 @@ class VizdoomTurboVecEnv(VectorEnv):
                             asset,
                             snapshot,
                             int(noop_counts[lane_index]),
+                            tuple(int(value) for value in enemy_variant_indices[lane_index]),
+                            tuple(int(value) for value in surface_variant_indices[lane_index]),
                         ),
                     )
                 )
@@ -1206,6 +1294,8 @@ class VizdoomTurboVecEnv(VectorEnv):
                     width = len(self._game_variables)
                     self._signals[lane, :width] = raw_signals
         self._active_state_indices.setflags(write=True)
+        self._active_enemy_variant_indices.setflags(write=True)
+        self._active_surface_variant_indices.setflags(write=True)
         self._action_history.clear(static_mask)
         for lane in reset_lane_values:
             lane_index = int(lane)
@@ -1219,20 +1309,36 @@ class VizdoomTurboVecEnv(VectorEnv):
                     game_seed=int(game_seeds[lane_index]),
                     state_index=int(state_indices[lane_index]),
                     noop_count=int(noop_counts[lane_index]),
+                    enemy_variant_indices=tuple(
+                        int(value) for value in enemy_variant_indices[lane_index]
+                    ),
+                    surface_variant_indices=tuple(
+                        int(value) for value in surface_variant_indices[lane_index]
+                    ),
                 )
             else:
                 self._stack[lane_index] = snapshot.stack
                 self._stack_heads[lane_index] = snapshot.stack_head
                 self._raw_frames[lane_index][...] = snapshot.raw_frame
-                self._rngs[lane_index].bit_generator.state = copy.deepcopy(
-                    snapshot.rng_state
-                )
+                self._rngs[lane_index].bit_generator.state = copy.deepcopy(snapshot.rng_state)
                 self._last_actions[lane_index] = snapshot.last_action
                 self._active_state_indices[lane_index] = snapshot.state_index
+                for role_index, rng_state in enumerate(snapshot.enemy_variant_rng_states):
+                    self._enemy_variant_rngs[role_index][
+                        lane_index
+                    ].bit_generator.state = copy.deepcopy(rng_state)
+                for role_index, rng_state in enumerate(snapshot.surface_variant_rng_states):
+                    self._surface_variant_rngs[role_index][
+                        lane_index
+                    ].bit_generator.state = copy.deepcopy(rng_state)
                 self._episode_returns[lane_index] = snapshot.episode_return
                 self._episode_origins[lane_index] = snapshot.origin
                 self._action_history.replace_lane(lane_index, snapshot.action_history)
+            self._active_enemy_variant_indices[lane_index] = enemy_variant_indices[lane_index]
+            self._active_surface_variant_indices[lane_index] = surface_variant_indices[lane_index]
         self._active_state_indices.setflags(write=False)
+        self._active_enemy_variant_indices.setflags(write=False)
+        self._active_surface_variant_indices.setflags(write=False)
         self._initialized[mask] = True
         self._pending_reset[mask] = False
         if not self._all_initialized:
@@ -1281,6 +1387,23 @@ class VizdoomTurboVecEnv(VectorEnv):
         infos = self._infos(mask.copy())
         infos["state_index"] = self._active_state_indices.copy()
         infos["_state_index"] = mask.copy()
+        if self._defend_line_plus:
+            active_ids = self.active_enemy_variant_ids()
+            for role_index, role in enumerate(self.enemy_variant_roles):
+                infos[f"{role}_variant_index"] = self._active_enemy_variant_indices[
+                    :, role_index
+                ].copy()
+                infos[f"_{role}_variant_index"] = mask.copy()
+                infos[f"{role}_variant_id"] = np.asarray(active_ids[role], dtype=object)
+                infos[f"_{role}_variant_id"] = mask.copy()
+            active_surface_ids = self.active_surface_variant_ids()
+            for role_index, role in enumerate(self.surface_variant_roles):
+                infos[f"{role}_variant_index"] = self._active_surface_variant_indices[
+                    :, role_index
+                ].copy()
+                infos[f"_{role}_variant_index"] = mask.copy()
+                infos[f"{role}_variant_id"] = np.asarray(active_surface_ids[role], dtype=object)
+                infos[f"_{role}_variant_id"] = mask.copy()
         source = np.full(self.num_envs, "environment", dtype=object)
         source[snapshot_mask] = "snapshot"
         infos["start_source"] = source
@@ -1301,9 +1424,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             if values.shape != (self.num_envs,):
                 raise ValueError(f"actions must have shape ({self.num_envs},)")
             if values.size and int(values.min()) < 0:
-                raise ValueError(
-                    f"actions must be in [0, {len(self._custom_actions) - 1}]"
-                )
+                raise ValueError(f"actions must be in [0, {len(self._custom_actions) - 1}]")
             if out is not None:
                 try:
                     np.take(self._custom_actions, values, axis=0, out=out)
@@ -1313,9 +1434,7 @@ class VizdoomTurboVecEnv(VectorEnv):
                     ) from error
                 return out
             if values.size and int(values.max()) >= len(self._custom_actions):
-                raise ValueError(
-                    f"actions must be in [0, {len(self._custom_actions) - 1}]"
-                )
+                raise ValueError(f"actions must be in [0, {len(self._custom_actions) - 1}]")
             return self._custom_actions[values]
         values = np.asarray(actions, dtype=np.float64)
         expected = (self.num_envs, len(self.buttons))
@@ -1427,10 +1546,7 @@ class VizdoomTurboVecEnv(VectorEnv):
                 self._signals[:, :width] = self._native_game_variables
         else:
             results = self._pool.run(
-                [
-                    (self._step_lane, (lane, applied[lane]))
-                    for lane in range(self.num_envs)
-                ]
+                [(self._step_lane, (lane, applied[lane])) for lane in range(self.num_envs)]
             )
             for lane, (
                 raw,
@@ -1477,6 +1593,58 @@ class VizdoomTurboVecEnv(VectorEnv):
     def active_state_indices(self) -> np.ndarray:
         return self._active_state_indices
 
+    def active_enemy_variant_indices(self) -> np.ndarray:
+        """Return read-only ``(lane, role)`` scenario variant indices."""
+        return self._active_enemy_variant_indices
+
+    def active_enemy_variant_ids(
+        self,
+    ) -> Mapping[str, tuple[str | None, ...]]:
+        """Return role-keyed selected variant ids for every vector lane."""
+        return MappingProxyType(
+            {
+                role: tuple(
+                    (
+                        self._enemy_variant_by_scenario_index[role_index][
+                            int(self._active_enemy_variant_indices[lane, role_index])
+                        ].variant_id
+                        if self._initialized[lane]
+                        and int(self._active_enemy_variant_indices[lane, role_index])
+                        in self._enemy_variant_by_scenario_index[role_index]
+                        else None
+                    )
+                    for lane in range(self.num_envs)
+                )
+                for role_index, role in enumerate(self.enemy_variant_roles)
+            }
+        )
+
+    def active_surface_variant_indices(self) -> np.ndarray:
+        """Return read-only ``(lane, role)`` surface scenario indices."""
+        return self._active_surface_variant_indices
+
+    def active_surface_variant_ids(
+        self,
+    ) -> Mapping[str, tuple[str | None, ...]]:
+        """Return role-keyed selected surface ids for every vector lane."""
+        return MappingProxyType(
+            {
+                role: tuple(
+                    (
+                        self._surface_variant_by_scenario_index[role_index][
+                            int(self._active_surface_variant_indices[lane, role_index])
+                        ].variant_id
+                        if self._initialized[lane]
+                        and int(self._active_surface_variant_indices[lane, role_index])
+                        in self._surface_variant_by_scenario_index[role_index]
+                        else None
+                    )
+                    for lane in range(self.num_envs)
+                )
+                for role_index, role in enumerate(self.surface_variant_roles)
+            }
+        )
+
     def capture_snapshots(self, mask: np.ndarray) -> tuple[Any | None, ...]:
         if self.closed:
             raise RuntimeError("cannot capture snapshots from a closed environment")
@@ -1496,9 +1664,9 @@ class VizdoomTurboVecEnv(VectorEnv):
         for selected_lane in np.flatnonzero(mask):
             lane = int(selected_lane)
             self._sync_native_rgb(lane)
-            history = np.asarray(
-                self._action_history.lane(lane), dtype=np.float64
-            ).reshape((-1, len(self.buttons)))
+            history = np.asarray(self._action_history.lane(lane), dtype=np.float64).reshape(
+                (-1, len(self.buttons))
+            )
             result[lane] = _LiveSnapshot(
                 owner=self._owner,
                 config_hash=self._config_hash,
@@ -1508,6 +1676,14 @@ class VizdoomTurboVecEnv(VectorEnv):
                 stack_head=int(self._stack_heads[lane]),
                 raw_frame=self._raw_frames[lane].copy(),
                 rng_state=copy.deepcopy(self._rngs[lane].bit_generator.state),
+                enemy_variant_rng_states=tuple(
+                    copy.deepcopy(self._enemy_variant_rngs[role_index][lane].bit_generator.state)
+                    for role_index in range(len(self.enemy_variant_roles))
+                ),
+                surface_variant_rng_states=tuple(
+                    copy.deepcopy(self._surface_variant_rngs[role_index][lane].bit_generator.state)
+                    for role_index in range(len(self.surface_variant_roles))
+                ),
                 last_action=self._last_actions[lane].copy(),
                 state_index=int(self._active_state_indices[lane]),
                 episode_return=float(self._episode_returns[lane]),

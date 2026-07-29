@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "dark-stone-v1",
+  "display_name": "Dark Stone",
+  "role": "floor",
+  "namespace": "flat",
+  "lump": "DSTONE1",
+  "source": {
+    "generation_mode": "built-in imagegen",
+    "generated_image_sha256": "0f743861eebf22250cdcb0b9a8a6648adb9b3edd50e4744614b4165e6e718143",
+    "prompt_sha256": "4b37012297cbdbea83a80310d6bb1185a57fc530aff5cd254c06d0ffa3559656",
+    "reference_assets": [],
+    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b"
+  },
+  "texture": {
+    "png": "texture/DSTONE1.png",
+    "png_sha256": "0bc1a32c223aab472b632e90e68f39613fcc8647bc976e374b431b32d6af461b",
+    "size": [
+      64,
+      64
+    ],
+    "fully_opaque": true,
+    "colors_in_playpal": true,
+    "seamless_left_right": true,
+    "seamless_top_bottom": true
+  },
+  "proof": {
+    "tiled_preview": "proof/tiled-preview.png",
+    "tiled_preview_sha256": "c08e214aa50154c570544b6aeac4ca1837b405b1365af89e5ac7a098c2cab54d"
+  },
+  "provenance": {
+    "origin": "Original AI-generated material texture",
+    "postprocess": "Center crop; Lanczos downsample to 32x32; mirrored 2x2 wrap; nearest PLAYPAL quantization without dithering"
+  }
+}

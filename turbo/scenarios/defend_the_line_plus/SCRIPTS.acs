@@ -1,0 +1,169 @@
+#include "zcommon.acs"
+
+global int 0:reward;
+
+int respawn_delay = 90;
+int newId = 10;
+int delay_time = 240;
+int imp_x = 64.0;
+int imp_y_max = 512.0;
+int imp_y_min = 64.0;
+
+function str ShooterClass(void)
+{
+    switch (GetCVar("vizdoom_plus_enemy_variant"))
+    {
+        case 1:
+            return "VizdoomPlusBasaltFurnaceSentinelV1";
+        default:
+            return "DoomImp";
+    }
+    return "DoomImp";
+}
+
+function str FighterClass(void)
+{
+    switch (GetCVar("vizdoom_plus_fighter_variant"))
+    {
+        case 1:
+            return "VizdoomPlusVerdigrisRamHoundV1";
+        default:
+            return "Demon";
+    }
+    return "Demon";
+}
+
+function str WallTexture(void)
+{
+    switch (GetCVar("vizdoom_plus_wall_variant"))
+    {
+        case 1:
+            return "BASALT1";
+        case 2:
+            return "STEELP1";
+        case 3:
+            return "POLARW1";
+        case 4:
+            return "SOLARW1";
+        case 5:
+            return "VERDW1";
+        default:
+            return "BRICK12";
+    }
+    return "BRICK12";
+}
+
+function str FloorTexture(void)
+{
+    switch (GetCVar("vizdoom_plus_floor_variant"))
+    {
+        case 1:
+            return "DSTONE1";
+        case 2:
+            return "POLARF1";
+        case 3:
+            return "SOLARF1";
+        case 4:
+            return "VERDF1";
+        default:
+            return "CRATOP1";
+    }
+    return "CRATOP1";
+}
+
+function str CeilingTexture(void)
+{
+    switch (GetCVar("vizdoom_plus_ceiling_variant"))
+    {
+        case 1:
+            return "IGRID1";
+        case 2:
+            return "POLARC1";
+        case 3:
+            return "SOLARC1";
+        case 4:
+            return "VERDC1";
+        default:
+            return "CRATOP1";
+    }
+    return "CRATOP1";
+}
+
+function void ApplySurfaceVariants(void)
+{
+    // ReplaceTextures flags exclude unrelated surface types:
+    // wall=NOT_FLOOR|NOT_CEILING, floor=wall bands|ceiling,
+    // ceiling=wall bands|floor.
+    ReplaceTextures("BRICK12", WallTexture(), 24);
+    ReplaceTextures("CRATOP1", FloorTexture(), 23);
+    ReplaceTextures("CRATOP1", CeilingTexture(), 15);
+}
+
+function int SpawnShooter(int y, int hp)
+{
+    int spawned_id = newId++;
+    if (Spawn(ShooterClass(), imp_x, y, 0.0, spawned_id, 128) == 0)
+    {
+        return 0;
+    }
+    SetActorProperty(spawned_id, APROP_Speed, 0);
+    SetActorProperty(spawned_id, APROP_Health, hp);
+    SetThingSpecial(spawned_id, ACS_ExecuteAlways, 3, 0, spawned_id, y, hp + 4);
+    return 1;
+}
+
+function int SpawnFighter(int y, int hp)
+{
+    int spawned_id = newId++;
+    if (Spawn(FighterClass(), imp_x, y, 0.0, spawned_id, 128) == 0)
+    {
+        return 0;
+    }
+    SetActorProperty(spawned_id, APROP_Health, hp);
+    SetThingSpecial(spawned_id, ACS_ExecuteAlways, 4, 0, spawned_id, y, hp + 4);
+    return 1;
+}
+
+script 1 OPEN
+{
+    reward = 0;
+    ApplySurfaceVariants();
+    SpawnShooter(90.0, 1);
+    SpawnShooter(200.0, 1);
+    SpawnShooter(400.0, 1);
+    SpawnFighter(150.0, 1);
+    SpawnFighter(300.0, 1);
+    SpawnFighter(450.0, 1);
+}
+
+script 2 ENTER
+{
+    GiveInventory("Clip", 20);
+    while (1)
+    {
+        delay(1);
+        GiveInventory("Clip", 1);
+    }
+}
+
+script 3(int id, int y, int hp)
+{
+    reward = reward + 1.0;
+    Thing_Remove(id);
+    delay(respawn_delay);
+    while (SpawnShooter(y, hp) == 0)
+    {
+        delay(2);
+    }
+}
+
+script 4(int id, int y, int hp)
+{
+    reward = reward + 1.0;
+    Thing_Remove(id);
+    delay(respawn_delay);
+    while (SpawnFighter(y, hp) == 0)
+    {
+        delay(2);
+    }
+}

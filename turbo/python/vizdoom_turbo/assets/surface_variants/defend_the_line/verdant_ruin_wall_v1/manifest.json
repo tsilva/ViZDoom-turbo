@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "verdant-ruin-wall-v1",
+  "display_name": "Verdant Ruin Wall",
+  "role": "wall",
+  "namespace": "texture",
+  "lump": "VERDW1",
+  "source": {
+    "generation_mode": "built-in imagegen",
+    "generated_image_sha256": "fb7ee237b01872629e8742489b1932c46db0fd82503e9a7a07fa95cf18887a08",
+    "prompt_sha256": "7c1145a508c1584849989c570267a7954b0bc9c2a946a95d425409999a5ac656",
+    "reference_assets": [],
+    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b",
+    "grid": {
+      "rows": 3,
+      "columns": 3,
+      "row": 2,
+      "column": 0,
+      "cell_inset_fraction": 0.02
+    }
+  },
+  "texture": {
+    "png": "texture/VERDW1.png",
+    "png_sha256": "0679c54df641e06c5d9a68c06661367df22f009b0d734e3b202dc32239c97436",
+    "size": [
+      64,
+      64
+    ],
+    "fully_opaque": true,
+    "colors_in_playpal": true,
+    "seamless_left_right": true,
+    "seamless_top_bottom": true
+  },
+  "proof": {
+    "tiled_preview": "proof/tiled-preview.png",
+    "tiled_preview_sha256": "f6a1aecc7f1da7871e9bb9d91ff4a32b6877708dfeb9653a96739f53fcc2ddde"
+  },
+  "provenance": {
+    "origin": "Original AI-generated material texture",
+    "postprocess": "Select gutter-inset source grid cell; center crop; Lanczos downsample to 32x32; mirrored 2x2 wrap; nearest PLAYPAL quantization without dithering"
+  },
+  "theme": "verdant-ruin-v1"
+}

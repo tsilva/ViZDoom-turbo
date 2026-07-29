@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-- Nothing yet.
+- Add `VizdoomDefendLine-Plus-v1` with seeded per-lane enemy and surface
+  appearance variants, provenance-tracked reusable assets, and unchanged
+  gameplay contracts.
+- Remove the redundant `state_dir` environment constructor option; saved-game
+  starts continue to accept direct file paths or byte payloads.
 
 ## 1.3.0.post14 - 2026-07-29
 

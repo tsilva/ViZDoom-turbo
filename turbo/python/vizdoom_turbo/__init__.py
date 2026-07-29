@@ -26,6 +26,7 @@ try:
         "VizdoomDeadlyCorridor-Turbo-v0": "VizdoomDeadlyCorridor-v1",
         "VizdoomDefendCenter-Turbo-v0": "VizdoomDefendCenter-v1",
         "VizdoomDefendLine-Turbo-v0": "VizdoomDefendLine-v1",
+        "VizdoomDefendLine-Plus-v1": "VizdoomDefendLine-Plus-v1",
         "VizdoomHealthGathering-Turbo-v0": "VizdoomHealthGathering-v1",
         "VizdoomHealthGatheringSupreme-Turbo-v0": "VizdoomHealthGatheringSupreme-v1",
         "VizdoomMyWayHome-Turbo-v0": "VizdoomMyWayHome-v1",

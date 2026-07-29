@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "basalt-blocks-v1",
+  "display_name": "Basalt Blocks",
+  "role": "wall",
+  "namespace": "texture",
+  "lump": "BASALT1",
+  "source": {
+    "generation_mode": "built-in imagegen",
+    "generated_image_sha256": "b01f4a5af458fdd9a0bfa3ea0fcb0ad59fcc012c94190b698b8bcd95ac7a6990",
+    "prompt_sha256": "43645918c4dcdc400c896503b63beda5486bc2bc85c0ac9824fccf1a40debde8",
+    "reference_assets": [],
+    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b"
+  },
+  "texture": {
+    "png": "texture/BASALT1.png",
+    "png_sha256": "1a291c7718fe507565304c9e2d306d2dea27461f83377bac97d9deb261defd99",
+    "size": [
+      64,
+      64
+    ],
+    "fully_opaque": true,
+    "colors_in_playpal": true,
+    "seamless_left_right": true,
+    "seamless_top_bottom": true
+  },
+  "proof": {
+    "tiled_preview": "proof/tiled-preview.png",
+    "tiled_preview_sha256": "b59497018f59f2ff7a47769257d325839515dd87ec0840d9ec5a7aedd55650ac"
+  },
+  "provenance": {
+    "origin": "Original AI-generated material texture",
+    "postprocess": "Center crop; Lanczos downsample to 32x32; mirrored 2x2 wrap; nearest PLAYPAL quantization without dithering"
+  }
+}

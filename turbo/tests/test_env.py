@@ -30,11 +30,18 @@ REGISTERED_TURBO_GAMES = {
     "VizdoomDeadlyCorridor-Turbo-v0": "VizdoomDeadlyCorridor-v1",
     "VizdoomDefendCenter-Turbo-v0": "VizdoomDefendCenter-v1",
     "VizdoomDefendLine-Turbo-v0": "VizdoomDefendLine-v1",
+    "VizdoomDefendLine-Plus-v1": "VizdoomDefendLine-Plus-v1",
     "VizdoomHealthGathering-Turbo-v0": "VizdoomHealthGathering-v1",
     "VizdoomHealthGatheringSupreme-Turbo-v0": "VizdoomHealthGatheringSupreme-v1",
     "VizdoomMyWayHome-Turbo-v0": "VizdoomMyWayHome-v1",
     "VizdoomPredictPosition-Turbo-v0": "VizdoomPredictPosition-v1",
     "VizdoomTakeCover-Turbo-v0": "VizdoomTakeCover-v1",
+}
+APPEARANCE_VARIANT_RESET_INFO_KEYS = {
+    f"{prefix}{role}_variant_{suffix}"
+    for role in ("shooter", "fighter", "wall", "floor", "ceiling")
+    for prefix in ("", "_")
+    for suffix in ("index", "id")
 }
 
 
@@ -78,16 +85,25 @@ def make_exact_env(**overrides) -> VizdoomTurboVecEnv:
     return VizdoomTurboVecEnv(**options)
 
 
-def assert_info_equal(
-    actual: dict[str, np.ndarray], expected: dict[str, np.ndarray]
-) -> None:
+def assert_info_equal(actual: dict[str, np.ndarray], expected: dict[str, np.ndarray]) -> None:
     assert actual.keys() == expected.keys()
     for key in actual:
         np.testing.assert_array_equal(actual[key], expected[key], err_msg=key)
 
 
+def assert_mechanical_info_equal(
+    actual: dict[str, np.ndarray], expected: dict[str, np.ndarray]
+) -> None:
+    actual_keys = set(actual) - APPEARANCE_VARIANT_RESET_INFO_KEYS
+    expected_keys = set(expected) - APPEARANCE_VARIANT_RESET_INFO_KEYS
+    assert actual_keys == expected_keys
+    for key in actual_keys:
+        np.testing.assert_array_equal(actual[key], expected[key], err_msg=key)
+
+
 def test_public_signature_matches_turbo_constructor_contract() -> None:
     parameters = inspect.signature(VizdoomTurboVecEnv).parameters
+    assert parameters["use_fire_reset"].default is False
     expected = {
         "game",
         "state",
@@ -119,6 +135,8 @@ def test_public_signature_matches_turbo_constructor_contract() -> None:
         "reward_clip",
         "info_filter",
         "state_catalog",
+        "enemy_variants",
+        "surface_variants",
     }
     assert expected <= set(parameters)
     assert VizDoomTurboVecEnv is VizdoomTurboVecEnv
@@ -133,10 +151,456 @@ def test_public_signature_matches_turbo_constructor_contract() -> None:
         "MOVE_RIGHT",
         "ATTACK",
     )
+    assert scenario_buttons("VizdoomDefendLine-Plus-v1") == (
+        "TURN_LEFT",
+        "TURN_RIGHT",
+        "ATTACK",
+    )
     for registered_id, game in REGISTERED_TURBO_GAMES.items():
         spec = gym.spec(registered_id)
         assert spec.vector_entry_point == "vizdoom_turbo:VizdoomTurboVecEnv"
         assert spec.kwargs["game"] == game
+
+
+def test_removed_state_dir_is_rejected() -> None:
+    assert "state_dir" not in inspect.signature(VizdoomTurboVecEnv).parameters
+    with pytest.raises(TypeError, match="state_dir"):
+        VizdoomTurboVecEnv(state_dir="/tmp/states")
+
+
+def test_defend_line_plus_catalog_is_explicit_and_rejects_invalid_use() -> None:
+    env = make_exact_env(
+        game="VizdoomDefendLine-Plus-v1",
+        num_envs=1,
+        num_threads=1,
+    )
+    try:
+        assert env.enemy_variant_roles == ("shooter", "fighter")
+        assert dict(env.enemy_variants) == {
+            "shooter": ("original", "basalt-furnace-sentinel-v1"),
+            "fighter": ("original", "verdigris-ram-hound-v1"),
+        }
+        assert len(env.enemy_variant_catalog_sha256) == 64
+        assert len(env.enemy_variant_wad_sha256) == 64
+        assert env.capabilities["supports_enemy_variants"] is True
+        assert env.surface_variant_roles == ("wall", "floor", "ceiling")
+        assert dict(env.surface_variants) == {
+            "wall": (
+                "original",
+                "basalt-blocks-v1",
+                "steel-panels-v1",
+                "polar-bunker-wall-v1",
+                "solar-shrine-wall-v1",
+                "verdant-ruin-wall-v1",
+            ),
+            "floor": (
+                "original",
+                "dark-stone-v1",
+                "polar-bunker-floor-v1",
+                "solar-shrine-floor-v1",
+                "verdant-ruin-floor-v1",
+            ),
+            "ceiling": (
+                "original",
+                "industrial-grid-v1",
+                "polar-bunker-ceiling-v1",
+                "solar-shrine-ceiling-v1",
+                "verdant-ruin-ceiling-v1",
+            ),
+        }
+        assert {
+            theme: dict(variants) for theme, variants in env.surface_variant_themes.items()
+        } == {
+            "polar-bunker-v1": {
+                "wall": "polar-bunker-wall-v1",
+                "floor": "polar-bunker-floor-v1",
+                "ceiling": "polar-bunker-ceiling-v1",
+            },
+            "solar-shrine-v1": {
+                "wall": "solar-shrine-wall-v1",
+                "floor": "solar-shrine-floor-v1",
+                "ceiling": "solar-shrine-ceiling-v1",
+            },
+            "verdant-ruin-v1": {
+                "wall": "verdant-ruin-wall-v1",
+                "floor": "verdant-ruin-floor-v1",
+                "ceiling": "verdant-ruin-ceiling-v1",
+            },
+        }
+        assert len(env.surface_variant_catalog_sha256) == 64
+        assert env.surface_variant_wad_sha256 == env.enemy_variant_wad_sha256
+        assert env.capabilities["supports_surface_variants"] is True
+    finally:
+        env.close()
+
+    with pytest.raises(ValueError, match="unknown shooter variant"):
+        make_exact_env(
+            game="VizdoomDefendLine-Plus-v1",
+            num_envs=1,
+            num_threads=1,
+            enemy_variants=["missing"],
+        )
+    with pytest.raises(ValueError, match="cannot contain duplicates"):
+        make_exact_env(
+            game="VizdoomDefendLine-Plus-v1",
+            num_envs=1,
+            num_threads=1,
+            enemy_variants=["original", "original"],
+        )
+    with pytest.raises(ValueError, match="unknown Defend the Line enemy role"):
+        make_exact_env(
+            game="VizdoomDefendLine-Plus-v1",
+            num_envs=1,
+            num_threads=1,
+            enemy_variants={"missing": ["original"]},
+        )
+    with pytest.raises(ValueError, match="only supported"):
+        make_exact_env(
+            num_envs=1,
+            num_threads=1,
+            enemy_variants=["original"],
+        )
+    with pytest.raises(ValueError, match="unknown wall surface variant"):
+        make_exact_env(
+            game="VizdoomDefendLine-Plus-v1",
+            num_envs=1,
+            num_threads=1,
+            surface_variants={"wall": ["missing"]},
+        )
+    with pytest.raises(ValueError, match="unknown Defend the Line surface role"):
+        make_exact_env(
+            game="VizdoomDefendLine-Plus-v1",
+            num_envs=1,
+            num_threads=1,
+            surface_variants={"missing": ["original"]},
+        )
+    with pytest.raises(ValueError, match="only supported"):
+        make_exact_env(
+            num_envs=1,
+            num_threads=1,
+            surface_variants={"wall": ["original"]},
+        )
+
+
+def test_defend_line_plus_original_variant_is_mechanically_exact() -> None:
+    common = {
+        "num_envs": 2,
+        "num_threads": 2,
+    }
+    canonical = make_exact_env(game="VizdoomDefendLine-v1", **common)
+    plus = make_exact_env(
+        game="VizdoomDefendLine-Plus-v1",
+        enemy_variants={
+            "shooter": ["original"],
+            "fighter": ["original"],
+        },
+        surface_variants={
+            "wall": ["original"],
+            "floor": ["original"],
+            "ceiling": ["original"],
+        },
+        **common,
+    )
+    try:
+        canonical_observations, canonical_infos = canonical.reset(seed=727)
+        plus_observations, plus_infos = plus.reset(seed=727)
+        np.testing.assert_array_equal(plus_observations, canonical_observations)
+        assert_mechanical_info_equal(plus_infos, canonical_infos)
+        assert dict(plus.active_enemy_variant_ids()) == {
+            "shooter": ("original", "original"),
+            "fighter": ("original", "original"),
+        }
+        assert plus_infos["shooter_variant_id"].tolist() == ["original", "original"]
+        assert plus_infos["fighter_variant_id"].tolist() == ["original", "original"]
+        assert dict(plus.active_surface_variant_ids()) == {
+            "wall": ("original", "original"),
+            "floor": ("original", "original"),
+            "ceiling": ("original", "original"),
+        }
+        assert plus._config_hash != canonical._config_hash
+
+        actions = np.zeros(2, dtype=np.int64)
+        for _ in range(8):
+            canonical_transition = canonical.step(actions)
+            plus_transition = plus.step(actions)
+            for actual, expected in zip(
+                plus_transition[:4],
+                canonical_transition[:4],
+                strict=True,
+            ):
+                np.testing.assert_array_equal(actual, expected)
+            assert_info_equal(plus_transition[4], canonical_transition[4])
+    finally:
+        canonical.close()
+        plus.close()
+
+
+def test_defend_line_plus_basalt_changes_pixels_not_transition_signals() -> None:
+    common = {
+        "game": "VizdoomDefendLine-Plus-v1",
+        "num_envs": 2,
+        "num_threads": 2,
+    }
+    original = make_exact_env(
+        enemy_variants={
+            "shooter": ["original"],
+            "fighter": ["original"],
+        },
+        **common,
+    )
+    basalt = make_exact_env(
+        enemy_variants={
+            "shooter": ["basalt-furnace-sentinel-v1"],
+            "fighter": ["original"],
+        },
+        **common,
+    )
+    try:
+        original_observations, original_infos = original.reset(seed=311)
+        basalt_observations, basalt_infos = basalt.reset(seed=311)
+        assert np.any(basalt_observations != original_observations)
+        assert_mechanical_info_equal(basalt_infos, original_infos)
+        assert basalt.active_enemy_variant_ids()["shooter"] == (
+            "basalt-furnace-sentinel-v1",
+            "basalt-furnace-sentinel-v1",
+        )
+
+        actions = np.zeros(2, dtype=np.int64)
+        saw_visual_difference = True
+        for _ in range(8):
+            original_transition = original.step(actions)
+            basalt_transition = basalt.step(actions)
+            saw_visual_difference = saw_visual_difference or bool(
+                np.any(basalt_transition[0] != original_transition[0])
+            )
+            for actual, expected in zip(
+                basalt_transition[1:4],
+                original_transition[1:4],
+                strict=True,
+            ):
+                np.testing.assert_array_equal(actual, expected)
+            assert_info_equal(basalt_transition[4], original_transition[4])
+        assert saw_visual_difference
+    finally:
+        original.close()
+        basalt.close()
+
+
+def test_defend_line_plus_melee_variant_changes_pixels_not_mechanics() -> None:
+    common = {
+        "game": "VizdoomDefendLine-Plus-v1",
+        "num_envs": 2,
+        "num_threads": 2,
+        "enemy_variants": {"shooter": ["original"]},
+    }
+    original = make_exact_env(
+        enemy_variants={
+            "shooter": ["original"],
+            "fighter": ["original"],
+        },
+        game=common["game"],
+        num_envs=common["num_envs"],
+        num_threads=common["num_threads"],
+    )
+    verdigris = make_exact_env(
+        enemy_variants={
+            "shooter": ["original"],
+            "fighter": ["verdigris-ram-hound-v1"],
+        },
+        game=common["game"],
+        num_envs=common["num_envs"],
+        num_threads=common["num_threads"],
+    )
+    try:
+        original_observations, original_infos = original.reset(seed=419)
+        variant_observations, variant_infos = verdigris.reset(seed=419)
+        assert np.any(variant_observations != original_observations)
+        assert_mechanical_info_equal(variant_infos, original_infos)
+        assert verdigris.active_enemy_variant_ids()["fighter"] == (
+            "verdigris-ram-hound-v1",
+            "verdigris-ram-hound-v1",
+        )
+
+        actions = np.zeros(2, dtype=np.int64)
+        for _ in range(12):
+            original_transition = original.step(actions)
+            variant_transition = verdigris.step(actions)
+            for actual, expected in zip(
+                variant_transition[1:4],
+                original_transition[1:4],
+                strict=True,
+            ):
+                np.testing.assert_array_equal(actual, expected)
+            assert_info_equal(variant_transition[4], original_transition[4])
+    finally:
+        original.close()
+        verdigris.close()
+
+
+@pytest.mark.parametrize(
+    ("role", "variant_id"),
+    (
+        ("wall", "basalt-blocks-v1"),
+        ("wall", "steel-panels-v1"),
+        ("wall", "polar-bunker-wall-v1"),
+        ("wall", "solar-shrine-wall-v1"),
+        ("wall", "verdant-ruin-wall-v1"),
+        ("floor", "dark-stone-v1"),
+        ("floor", "polar-bunker-floor-v1"),
+        ("floor", "solar-shrine-floor-v1"),
+        ("floor", "verdant-ruin-floor-v1"),
+        ("ceiling", "industrial-grid-v1"),
+        ("ceiling", "polar-bunker-ceiling-v1"),
+        ("ceiling", "solar-shrine-ceiling-v1"),
+        ("ceiling", "verdant-ruin-ceiling-v1"),
+    ),
+)
+def test_defend_line_plus_surface_changes_pixels_not_mechanics(role: str, variant_id: str) -> None:
+    common = {
+        "game": "VizdoomDefendLine-Plus-v1",
+        "num_envs": 2,
+        "num_threads": 2,
+        "enemy_variants": {
+            "shooter": ["original"],
+            "fighter": ["original"],
+        },
+    }
+    original_surfaces = {
+        "wall": ["original"],
+        "floor": ["original"],
+        "ceiling": ["original"],
+    }
+    selected_surfaces = dict(original_surfaces)
+    selected_surfaces[role] = [variant_id]
+    original = make_exact_env(surface_variants=original_surfaces, **common)
+    variant = make_exact_env(surface_variants=selected_surfaces, **common)
+    try:
+        original_observations, original_infos = original.reset(seed=613)
+        variant_observations, variant_infos = variant.reset(seed=613)
+        assert np.any(variant_observations != original_observations)
+        assert_mechanical_info_equal(variant_infos, original_infos)
+        assert variant.active_surface_variant_ids()[role] == (
+            variant_id,
+            variant_id,
+        )
+
+        actions = np.zeros(2, dtype=np.int64)
+        for _ in range(8):
+            original_transition = original.step(actions)
+            variant_transition = variant.step(actions)
+            for actual, expected in zip(
+                variant_transition[1:4],
+                original_transition[1:4],
+                strict=True,
+            ):
+                np.testing.assert_array_equal(actual, expected)
+            assert_info_equal(variant_transition[4], original_transition[4])
+    finally:
+        original.close()
+        variant.close()
+
+
+def test_defend_line_plus_default_mix_is_seed_reproducible() -> None:
+    common = {
+        "game": "VizdoomDefendLine-Plus-v1",
+        "num_envs": 16,
+        "num_threads": 4,
+    }
+    left = make_exact_env(**common)
+    right = make_exact_env(**common)
+    try:
+        left_observations, left_infos = left.reset(seed=0)
+        right_observations, right_infos = right.reset(seed=0)
+        np.testing.assert_array_equal(left_observations, right_observations)
+        assert_info_equal(left_infos, right_infos)
+        assert left.active_enemy_variant_ids() == right.active_enemy_variant_ids()
+        assert left.active_surface_variant_ids() == right.active_surface_variant_ids()
+        active_ids = left.active_enemy_variant_ids()
+        assert set(active_ids["shooter"]) == {
+            "original",
+            "basalt-furnace-sentinel-v1",
+        }
+        assert set(active_ids["fighter"]) == {
+            "original",
+            "verdigris-ram-hound-v1",
+        }
+        active_surface_ids = left.active_surface_variant_ids()
+        for role, ids in active_surface_ids.items():
+            assert 1 < len(set(ids))
+            assert set(ids) <= set(left.surface_variants[role])
+        actions = np.arange(16, dtype=np.int64) % 4
+        for _ in range(8):
+            left_transition = left.step(actions)
+            right_transition = right.step(actions)
+            for actual, expected in zip(
+                left_transition[:4],
+                right_transition[:4],
+                strict=True,
+            ):
+                np.testing.assert_array_equal(actual, expected)
+            assert_info_equal(left_transition[4], right_transition[4])
+
+        before_ids = {role: values for role, values in left.active_enemy_variant_ids().items()}
+        before_surface_ids = {
+            role: values for role, values in left.active_surface_variant_ids().items()
+        }
+        before_unmasked = left_transition[0][1:].copy()
+        mask = np.zeros(16, dtype=np.bool_)
+        mask[0] = True
+        left_observations, left_infos = left.reset(
+            seed=[2, *([None] * 15)],
+            options={"reset_mask": mask},
+        )
+        after_ids = left.active_enemy_variant_ids()
+        assert after_ids["shooter"][0] == "original"
+        assert after_ids["fighter"][0] == "verdigris-ram-hound-v1"
+        for role in left.enemy_variant_roles:
+            assert after_ids[role][1:] == before_ids[role][1:]
+        after_surface_ids = left.active_surface_variant_ids()
+        for role in left.surface_variant_roles:
+            assert after_surface_ids[role][1:] == before_surface_ids[role][1:]
+        np.testing.assert_array_equal(left_observations[1:], before_unmasked)
+        assert left_infos["_shooter_variant_id"].tolist() == mask.tolist()
+        assert left_infos["_fighter_variant_id"].tolist() == mask.tolist()
+        assert left_infos["_wall_variant_id"].tolist() == mask.tolist()
+        assert left_infos["_floor_variant_id"].tolist() == mask.tolist()
+        assert left_infos["_ceiling_variant_id"].tolist() == mask.tolist()
+    finally:
+        left.close()
+        right.close()
+
+
+def test_defend_line_plus_snapshot_restore_preserves_appearance() -> None:
+    env = make_exact_env(
+        game="VizdoomDefendLine-Plus-v1",
+        num_envs=2,
+        num_threads=2,
+    )
+    try:
+        env.reset(seed=881)
+        env.step(np.asarray([0, 1], dtype=np.int64))
+        enemy_ids = dict(env.active_enemy_variant_ids())
+        surface_ids = dict(env.active_surface_variant_ids())
+        mask = np.ones(2, dtype=np.bool_)
+        snapshots = env.capture_snapshots(mask)
+        actions = np.asarray([2, 3], dtype=np.int64)
+        expected = env.step(actions)
+
+        env.reset(
+            options={
+                "reset_mask": mask,
+                "state_indices": np.full(2, -1, dtype=np.int32),
+                "snapshots": snapshots,
+            }
+        )
+        assert dict(env.active_enemy_variant_ids()) == enemy_ids
+        assert dict(env.active_surface_variant_ids()) == surface_ids
+        actual = env.step(actions)
+        for actual_array, expected_array in zip(actual[:4], expected[:4], strict=True):
+            np.testing.assert_array_equal(actual_array, expected_array)
+        assert_info_equal(actual[4], expected[4])
+    finally:
+        env.close()
 
 
 def test_turbo_api_v1_capabilities_signals_ownership_and_rendering() -> None:
@@ -308,9 +772,7 @@ def test_terminal_lane_blocks_step_until_masked_reset() -> None:
         env.reset(seed=5)
         done = np.zeros(2, dtype=np.bool_)
         for _ in range(8):
-            _obs, _reward, terminated, truncated, _infos = env.step(
-                np.zeros(2, dtype=np.int64)
-            )
+            _obs, _reward, terminated, truncated, _infos = env.step(np.zeros(2, dtype=np.int64))
             done = terminated | truncated
             if np.any(done):
                 break

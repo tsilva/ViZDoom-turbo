@@ -1,0 +1,66 @@
+{
+  "schema_version": 2,
+  "environment": "VizdoomDefendLine-Plus-v1",
+  "scenario": {
+    "config": "defend_the_line_plus.cfg",
+    "wad": "defend_the_line_plus.wad",
+    "wad_sha256": "fda7e84f0f56020d2998db93411a6ee970b18c798ef2b6387bf5430f878df472",
+    "acc_revision": "bdb9bc4d2c5aee7ca3ff8da985d73aaf83af0557"
+  },
+  "selection": {
+    "scope": "episode_reset",
+    "distribution": "uniform_per_role",
+    "timing": "before_new_episode",
+    "seed_source": "independent_lane_role_rng"
+  },
+  "roles": {
+    "shooter": {
+      "selector_cvar": "vizdoom_plus_enemy_variant",
+      "default_variants": [
+        "original",
+        "basalt-furnace-sentinel-v1"
+      ],
+      "variants": [
+        {
+          "id": "original",
+          "decorate_id": "Original",
+          "scenario_index": 0,
+          "actor": "DoomImp",
+          "sprite": null
+        },
+        {
+          "id": "basalt-furnace-sentinel-v1",
+          "decorate_id": "BasaltFurnaceSentinelV1",
+          "scenario_index": 1,
+          "actor": "VizdoomPlusBasaltFurnaceSentinelV1",
+          "sprite": "BSLT",
+          "manifest": "basalt_furnace_sentinel_v1/manifest.json"
+        }
+      ]
+    },
+    "fighter": {
+      "selector_cvar": "vizdoom_plus_fighter_variant",
+      "default_variants": [
+        "original",
+        "verdigris-ram-hound-v1"
+      ],
+      "variants": [
+        {
+          "id": "original",
+          "decorate_id": "Original",
+          "scenario_index": 0,
+          "actor": "Demon",
+          "sprite": null
+        },
+        {
+          "id": "verdigris-ram-hound-v1",
+          "decorate_id": "VerdigrisRamHoundV1",
+          "scenario_index": 1,
+          "actor": "VizdoomPlusVerdigrisRamHoundV1",
+          "sprite": "VRHD",
+          "manifest": "verdigris_ram_hound_v1/manifest.json"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "id": "basalt-furnace-sentinel-v1",
+  "display_name": "Basalt Furnace Sentinel",
+  "sprite": "BSLT",
+  "source": {
+    "transparent_sheet_sha256": "c2c038d6691175e9286493eaf851c862265f8b4fe7ae7335c908fbe37f0d0f9f",
+    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b",
+    "prompt_sha256": "8c68365c531c55d996b9887c884376af0651a66441dcc5f1f9dbb7b7147de147"
+  },
+  "frames": [
+    {
+      "lump": "BSLTA0",
+      "png": "frames/BSLTA0.png",
+      "png_sha256": "b0f260a5e640a2491c13cab2057a408e7cc1d6d0d9eeda9acb812a5ea736c44c",
+      "patch": "lumps/BSLTA0.lmp",
+      "patch_sha256": "7875fb8a9e0a40922a8a8e531627113f43d0f10fa6c02dda1e1870430a737450",
+      "size": [
+        53,
+        60
+      ],
+      "source_component_pixels": 136034,
+      "binary_alpha": true,
+      "opaque_colors_in_playpal": true
+    },
+    {
+      "lump": "BSLTB0",
+      "png": "frames/BSLTB0.png",
+      "png_sha256": "f148f44a20053908fbc394d2a0e6730813844e2239d17fccd386d2f64fb18e4b",
+      "patch": "lumps/BSLTB0.lmp",
+      "patch_sha256": "11bbbedab3bc628cfac9758a919f530f96ead3c9649a708ea5dcb76f3ed922f1",
+      "size": [
+        75,
+        60
+      ],
+      "source_component_pixels": 143739,
+      "binary_alpha": true,
+      "opaque_colors_in_playpal": true
+    },
+    {
+      "lump": "BSLTC0",
+      "png": "frames/BSLTC0.png",
+      "png_sha256": "9cfa3870ed1ee39f8790296b0a8707a1a4ab0cfea32ee498b633d1daa1210b69",
+      "patch": "lumps/BSLTC0.lmp",
+      "patch_sha256": "60286c7762f9506ab274e15c6a5842d924dcb658c66a73ba49dc2842fc1c9f89",
+      "size": [
+        73,
+        60
+      ],
+      "source_component_pixels": 140038,
+      "binary_alpha": true,
+      "opaque_colors_in_playpal": true
+    }
+  ],
+  "proof": {
+    "gif": "proof/original-vs-alternate.gif",
+    "gif_sha256": "5a7c50c5a298d435821799fbc534243d7af63ef2b6080e89a9ddf4eb72decf60",
+    "native_sheet": "proof/native-sheet.png",
+    "native_sheet_sha256": "9bcd0192d62f7aa3bb7a7865864e4cf1492dcf0b03d42af250054a074047f0ac"
+  }
+}

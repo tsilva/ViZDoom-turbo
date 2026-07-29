@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "industrial-grid-v1",
+  "display_name": "Industrial Grid",
+  "role": "ceiling",
+  "namespace": "flat",
+  "lump": "IGRID1",
+  "source": {
+    "generation_mode": "built-in imagegen",
+    "generated_image_sha256": "38842a6a84721badc5fabc1c00577b0f4ed0bd45f52175bcba4abb9167ab2172",
+    "prompt_sha256": "f874ba370fa5bc126e79cf0d612d8433b744b8a7f5553b228132913d7eb7b3c4",
+    "reference_assets": [],
+    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b"
+  },
+  "texture": {
+    "png": "texture/IGRID1.png",
+    "png_sha256": "8c93253bf74578acb1321655f080e5722b42f0239fa29266d3d8594e49b2a3f2",
+    "size": [
+      64,
+      64
+    ],
+    "fully_opaque": true,
+    "colors_in_playpal": true,
+    "seamless_left_right": true,
+    "seamless_top_bottom": true
+  },
+  "proof": {
+    "tiled_preview": "proof/tiled-preview.png",
+    "tiled_preview_sha256": "d26991f9673a1e546da64fce14ea78a241e0fbbc4330fb7cb03948b8275c0ba0"
+  },
+  "provenance": {
+    "origin": "Original AI-generated material texture",
+    "postprocess": "Center crop; Lanczos downsample to 32x32; mirrored 2x2 wrap; nearest PLAYPAL quantization without dithering"
+  }
+}

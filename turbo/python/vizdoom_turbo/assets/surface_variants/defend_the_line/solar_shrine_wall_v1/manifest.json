@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "solar-shrine-wall-v1",
+  "display_name": "Solar Shrine Wall",
+  "role": "wall",
+  "namespace": "texture",
+  "lump": "SOLARW1",
+  "source": {
+    "generation_mode": "built-in imagegen",
+    "generated_image_sha256": "fb7ee237b01872629e8742489b1932c46db0fd82503e9a7a07fa95cf18887a08",
+    "prompt_sha256": "7c1145a508c1584849989c570267a7954b0bc9c2a946a95d425409999a5ac656",
+    "reference_assets": [],
+    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b",
+    "grid": {
+      "rows": 3,
+      "columns": 3,
+      "row": 1,
+      "column": 0,
+      "cell_inset_fraction": 0.02
+    }
+  },
+  "texture": {
+    "png": "texture/SOLARW1.png",
+    "png_sha256": "cb8af7652550992c45d965ed96ba950e2c1dc26f33acb6218463ffa6c8e7e28d",
+    "size": [
+      64,
+      64
+    ],
+    "fully_opaque": true,
+    "colors_in_playpal": true,
+    "seamless_left_right": true,
+    "seamless_top_bottom": true
+  },
+  "proof": {
+    "tiled_preview": "proof/tiled-preview.png",
+    "tiled_preview_sha256": "3be7b494eda1f4205be65fa323cc8782a66dcd337c9b78c186876bc5bbb054ea"
+  },
+  "provenance": {
+    "origin": "Original AI-generated material texture",
+    "postprocess": "Select gutter-inset source grid cell; center crop; Lanczos downsample to 32x32; mirrored 2x2 wrap; nearest PLAYPAL quantization without dithering"
+  },
+  "theme": "solar-shrine-v1"
+}

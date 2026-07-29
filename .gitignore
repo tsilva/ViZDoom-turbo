@@ -103,6 +103,7 @@ src/vizdoom/zlib/CTestTestfile.cmake
 *.bak
 *.bcp
 *.lmp
+!turbo/python/vizdoom_turbo/assets/enemy_variants/**/lumps/*.lmp
 *.log
 *.zip
 **/doom2.wad
@@ -127,3 +128,6 @@ turbo/python/vizdoom/
 turbo/target/
 turbo/target-release-*/
 turbo/wheelhouse-v*/
+
+# Preserve image-generation sources locally; ship only reviewed package assets.
+turbo/scenarios/**/source_assets/**/*.png

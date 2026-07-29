@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "steel-panels-v1",
+  "display_name": "Steel Panels",
+  "role": "wall",
+  "namespace": "texture",
+  "lump": "STEELP1",
+  "source": {
+    "generation_mode": "built-in imagegen",
+    "generated_image_sha256": "050a5c9db23c50a1a4b9369fc326d1c910ec08a912ae10000256a7a17678864f",
+    "prompt_sha256": "16ab83c1ef1ebcacd3811ee1bff3128539db4c780362c99c824158f177983eee",
+    "reference_assets": [],
+    "freedoom_wad_sha256": "a8772e088847032510d97ba2312406a6998f21cbab44d4ff10696faa9c0ecd4b"
+  },
+  "texture": {
+    "png": "texture/STEELP1.png",
+    "png_sha256": "c88b4f086a8c4b3fb821e8df6178b2f89c097c470665155b73978acad35dddf1",
+    "size": [
+      64,
+      64
+    ],
+    "fully_opaque": true,
+    "colors_in_playpal": true,
+    "seamless_left_right": true,
+    "seamless_top_bottom": true
+  },
+  "proof": {
+    "tiled_preview": "proof/tiled-preview.png",
+    "tiled_preview_sha256": "ac685c43a8bb16a9e18602b976f961a4734680f7437bc4abbd04dc5e034b3ac8"
+  },
+  "provenance": {
+    "origin": "Original AI-generated material texture",
+    "postprocess": "Center crop; Lanczos downsample to 32x32; mirrored 2x2 wrap; nearest PLAYPAL quantization without dithering"
+  }
+}

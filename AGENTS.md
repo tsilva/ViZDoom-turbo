@@ -108,3 +108,10 @@ Before every task in this repository, use the `$specs-author` skill to read the 
 
 Use the project-level `$build-release` skill for versioning, release validation,
 tagging, PyPI publishing, GitHub Release creation, and release monitoring.
+
+
+## Enemy Visual Variants
+
+When generating, validating, previewing, packaging, or integrating a ViZDoom
+enemy spritesheet variant, use the user-local
+`$generate-vizdoom-enemy-variant` skill.

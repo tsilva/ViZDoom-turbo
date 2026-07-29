@@ -1,0 +1,193 @@
+{
+  "schema_version": 1,
+  "environment": "VizdoomDefendLine-Plus-v1",
+  "selection": {
+    "scope": "episode_reset",
+    "distribution": "uniform_per_role",
+    "timing": "before_new_episode",
+    "seed_source": "independent_lane_role_rng"
+  },
+  "themes": {
+    "polar-bunker-v1": {
+      "display_name": "Polar Research Bunker",
+      "variants": {
+        "wall": "polar-bunker-wall-v1",
+        "floor": "polar-bunker-floor-v1",
+        "ceiling": "polar-bunker-ceiling-v1"
+      }
+    },
+    "solar-shrine-v1": {
+      "display_name": "Desert Solar Shrine",
+      "variants": {
+        "wall": "solar-shrine-wall-v1",
+        "floor": "solar-shrine-floor-v1",
+        "ceiling": "solar-shrine-ceiling-v1"
+      }
+    },
+    "verdant-ruin-v1": {
+      "display_name": "Verdant Ruin",
+      "variants": {
+        "wall": "verdant-ruin-wall-v1",
+        "floor": "verdant-ruin-floor-v1",
+        "ceiling": "verdant-ruin-ceiling-v1"
+      }
+    }
+  },
+  "roles": {
+    "wall": {
+      "selector_cvar": "vizdoom_plus_wall_variant",
+      "default_variants": [
+        "original",
+        "basalt-blocks-v1",
+        "steel-panels-v1",
+        "polar-bunker-wall-v1",
+        "solar-shrine-wall-v1",
+        "verdant-ruin-wall-v1"
+      ],
+      "variants": [
+        {
+          "id": "original",
+          "scenario_index": 0,
+          "texture": "BRICK12",
+          "namespace": "texture"
+        },
+        {
+          "id": "basalt-blocks-v1",
+          "scenario_index": 1,
+          "texture": "BASALT1",
+          "namespace": "texture",
+          "manifest": "basalt_blocks_v1/manifest.json"
+        },
+        {
+          "id": "steel-panels-v1",
+          "scenario_index": 2,
+          "texture": "STEELP1",
+          "namespace": "texture",
+          "manifest": "steel_panels_v1/manifest.json"
+        },
+        {
+          "id": "polar-bunker-wall-v1",
+          "scenario_index": 3,
+          "texture": "POLARW1",
+          "namespace": "texture",
+          "theme": "polar-bunker-v1",
+          "manifest": "polar_bunker_wall_v1/manifest.json"
+        },
+        {
+          "id": "solar-shrine-wall-v1",
+          "scenario_index": 4,
+          "texture": "SOLARW1",
+          "namespace": "texture",
+          "theme": "solar-shrine-v1",
+          "manifest": "solar_shrine_wall_v1/manifest.json"
+        },
+        {
+          "id": "verdant-ruin-wall-v1",
+          "scenario_index": 5,
+          "texture": "VERDW1",
+          "namespace": "texture",
+          "theme": "verdant-ruin-v1",
+          "manifest": "verdant_ruin_wall_v1/manifest.json"
+        }
+      ]
+    },
+    "floor": {
+      "selector_cvar": "vizdoom_plus_floor_variant",
+      "default_variants": [
+        "original",
+        "dark-stone-v1",
+        "polar-bunker-floor-v1",
+        "solar-shrine-floor-v1",
+        "verdant-ruin-floor-v1"
+      ],
+      "variants": [
+        {
+          "id": "original",
+          "scenario_index": 0,
+          "texture": "CRATOP1",
+          "namespace": "flat"
+        },
+        {
+          "id": "dark-stone-v1",
+          "scenario_index": 1,
+          "texture": "DSTONE1",
+          "namespace": "flat",
+          "manifest": "dark_stone_v1/manifest.json"
+        },
+        {
+          "id": "polar-bunker-floor-v1",
+          "scenario_index": 2,
+          "texture": "POLARF1",
+          "namespace": "flat",
+          "theme": "polar-bunker-v1",
+          "manifest": "polar_bunker_floor_v1/manifest.json"
+        },
+        {
+          "id": "solar-shrine-floor-v1",
+          "scenario_index": 3,
+          "texture": "SOLARF1",
+          "namespace": "flat",
+          "theme": "solar-shrine-v1",
+          "manifest": "solar_shrine_floor_v1/manifest.json"
+        },
+        {
+          "id": "verdant-ruin-floor-v1",
+          "scenario_index": 4,
+          "texture": "VERDF1",
+          "namespace": "flat",
+          "theme": "verdant-ruin-v1",
+          "manifest": "verdant_ruin_floor_v1/manifest.json"
+        }
+      ]
+    },
+    "ceiling": {
+      "selector_cvar": "vizdoom_plus_ceiling_variant",
+      "default_variants": [
+        "original",
+        "industrial-grid-v1",
+        "polar-bunker-ceiling-v1",
+        "solar-shrine-ceiling-v1",
+        "verdant-ruin-ceiling-v1"
+      ],
+      "variants": [
+        {
+          "id": "original",
+          "scenario_index": 0,
+          "texture": "CRATOP1",
+          "namespace": "flat"
+        },
+        {
+          "id": "industrial-grid-v1",
+          "scenario_index": 1,
+          "texture": "IGRID1",
+          "namespace": "flat",
+          "manifest": "industrial_grid_v1/manifest.json"
+        },
+        {
+          "id": "polar-bunker-ceiling-v1",
+          "scenario_index": 2,
+          "texture": "POLARC1",
+          "namespace": "flat",
+          "theme": "polar-bunker-v1",
+          "manifest": "polar_bunker_ceiling_v1/manifest.json"
+        },
+        {
+          "id": "solar-shrine-ceiling-v1",
+          "scenario_index": 3,
+          "texture": "SOLARC1",
+          "namespace": "flat",
+          "theme": "solar-shrine-v1",
+          "manifest": "solar_shrine_ceiling_v1/manifest.json"
+        },
+        {
+          "id": "verdant-ruin-ceiling-v1",
+          "scenario_index": 4,
+          "texture": "VERDC1",
+          "namespace": "flat",
+          "theme": "verdant-ruin-v1",
+          "manifest": "verdant_ruin_ceiling_v1/manifest.json"
+        }
+      ]
+    }
+  }
+}
