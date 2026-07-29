@@ -35,6 +35,14 @@
 #include "c_dispatch.h"
 #include "i_sound.h"
 #include "i_system.h"
+#include "hardware.h"
+
+#include <cstdlib>
+
+#ifndef _WIN32
+#include <sys/resource.h>
+#include <sys/time.h>
+#endif
 
 
 /* CVARs and CCMDs */
@@ -76,6 +84,7 @@ CVAR (Bool, viz_cmd_filter, true, CVAR_NOSET)
 CVAR (Bool, viz_async, false, CVAR_NOSET)
 CVAR (Bool, viz_allow_input, false, CVAR_NOSET)
 CVAR (Int, viz_sync_timeout, 1000, CVAR_NOSET | CVAR_SERVERINFO) // In milliseconds
+CVAR (Bool, viz_turbo_profile, false, CVAR_NOSET)
 
 // buffers
 CVAR (Int, viz_screen_format, 0, 0)
@@ -138,6 +147,8 @@ int vizTime = 0;
 bool vizNextTic = false;
 bool vizUpdate = false;
 unsigned int vizLastUpdate = 0;
+static bool vizTurboStaticNoopEligible = true; //VIZDOOM_CODE
+static bool vizTurboStaticNoopRendered = false; //VIZDOOM_CODE
 int vizNodesRecv[VIZ_MAX_PLAYERS];
 
 int vizSavedTime = 0;
@@ -165,6 +176,16 @@ void VIZ_FreezeTime (bool frozen){
 
 void VIZ_Init(){
     if(*viz_controlled) {
+        if(*viz_turbo_profile ||
+           std::getenv("VIZDOOM_TURBO_DISABLE_FPS_TIMER") != NULL) {
+            I_SetFPSLimit(0);
+        }
+#ifndef _WIN32
+        const char *turboNice = std::getenv("VIZDOOM_TURBO_ENGINE_NICE");
+        if(turboNice != NULL) {
+            setpriority(PRIO_PROCESS, 0, std::atoi(turboNice));
+        }
+#endif
         Printf("VIZ_Init: instance id: %s, async: %d, input: %d\n", *viz_instance_id, *viz_async, *viz_allow_input);
 
         VIZ_CVARsUpdate();
@@ -189,6 +210,12 @@ void VIZ_Init(){
             I_GetTime = &VIZ_GetTime;
             I_WaitForTic = &VIZ_WaitForTic;
             I_FreezeTime = &VIZ_FreezeTime;
+#ifndef _WIN32
+            if(std::getenv("VIZDOOM_TURBO_DISABLE_TIC_TIMER") != NULL) {
+                struct itimerval disabledTimer = {{0, 0}, {0, 0}};
+                setitimer(ITIMER_REAL, &disabledTimer, NULL);
+            }
+#endif
         }
     }
 
@@ -218,7 +245,13 @@ void VIZ_AsyncStartTic(){
     }
 }
 
-static inline bool VIZ_BatchEnded(){
+bool VIZ_FusedTics(){
+    static const bool enabled =
+        std::getenv("VIZDOOM_TURBO_FUSED_TICS") != NULL;
+    return *viz_turbo_profile || enabled;
+}
+
+bool VIZ_BatchEnded(){
     return gamestate != GS_LEVEL
         || (!multiplayer
             && (VIZ_PLAYER.mo == NULL
@@ -250,36 +283,75 @@ void VIZ_Tic(){
 
     if (*viz_controlled){
         if(vizNextTic) {
-            const bool batchEnded = vizPendingTics > 0 && VIZ_BatchEnded();
-            if (vizPendingTics <= 1 || batchEnded) VIZ_GameStateTic();
-            if(vizUpdate) {
-                VIZ_Update();
-            }
-
-            // Sound buffer will always be updated irrespective of update signal
-            if (*viz_soft_audio) {
-                VIZ_AudioUpdate();
-            }
-
-            if (vizPendingTics > 0) ++vizBatchTicsMade;
-            if (vizPendingTics > 1 && !batchEnded) {
-                --vizPendingTics;
-                vizUpdate = vizBatchUpdate && vizPendingTics == 1;
-            }
-            else {
-                if (vizPendingTics > 1 && batchEnded && !vizUpdate) VIZ_Update();
-                if (vizPendingTics > 0) {
-                    char ticsMade[16];
-                    snprintf(ticsMade, sizeof(ticsMade), "%u", vizBatchTicsMade);
-                    VIZ_MQSend(VIZ_MSG_CODE_DOOM_BATCH_DONE, ticsMade);
+            //VIZDOOM_CODE
+            if (vizTurboReset) {
+                if (!vizTurboResetStarted &&
+                    (gamestate != GS_LEVEL ||
+                     (unsigned int)level.maptime < vizTurboResetInitialTic)) {
+                    vizTurboResetStarted = true;
                 }
-                else {
+                if (vizTurboResetStarted &&
+                    gamestate == GS_LEVEL &&
+                    (unsigned int)level.maptime >= vizTurboResetTargetTic) {
+                    vizTurboStaticNoopEligible = true; //VIZDOOM_CODE
+                    vizTurboStaticNoopRendered = false; //VIZDOOM_CODE
+                    VIZ_GameStateTic();
+                    VIZ_Update();
+                    vizTurboStaticNoopRendered = false; //VIZDOOM_CODE
                     VIZ_MQSend(VIZ_MSG_CODE_DOOM_DONE);
+                    vizTurboReset = false;
+                    vizTurboResetStarted = false;
+                    vizNextTic = false;
                 }
+            }
+            else if (VIZ_FusedTics() &&
+                     vizPendingTics > 0 &&
+                     vizBatchTicsMade > 0) {
+                const bool batchEnded = VIZ_BatchEnded();
+                VIZ_GameStateTic();
+                if (vizBatchUpdate || batchEnded) VIZ_Update();
+                VIZ_MQSend(
+                    VIZ_MSG_CODE_DOOM_BATCH_DONE,
+                    NULL,
+                    vizBatchTicsMade);
                 vizPendingTics = 0;
                 vizBatchTicsMade = 0;
                 vizBatchUpdate = false;
                 vizNextTic = false;
+            }
+            else {
+                const bool batchEnded = vizPendingTics > 0 && VIZ_BatchEnded();
+                if (vizPendingTics <= 1 || batchEnded) VIZ_GameStateTic();
+                if(vizUpdate) {
+                    VIZ_Update();
+                }
+
+                // Sound buffer will always be updated irrespective of update signal
+                if (*viz_soft_audio) {
+                    VIZ_AudioUpdate();
+                }
+
+                if (vizPendingTics > 0) ++vizBatchTicsMade;
+                if (vizPendingTics > 1 && !batchEnded) {
+                    --vizPendingTics;
+                    vizUpdate = vizBatchUpdate && vizPendingTics == 1;
+                }
+                else {
+                    if (vizPendingTics > 1 && batchEnded && !vizUpdate) VIZ_Update();
+                    if (vizPendingTics > 0) {
+                        VIZ_MQSend(
+                            VIZ_MSG_CODE_DOOM_BATCH_DONE,
+                            NULL,
+                            vizBatchTicsMade);
+                    }
+                    else {
+                        VIZ_MQSend(VIZ_MSG_CODE_DOOM_DONE);
+                    }
+                    vizPendingTics = 0;
+                    vizBatchTicsMade = 0;
+                    vizBatchUpdate = false;
+                    vizNextTic = false;
+                }
             }
         }
 
@@ -303,8 +375,36 @@ void VIZ_Update(){
         VIZ_D_MapDisplay();
         VIZ_ScreenLevelMapUpdate();
     }
-    VIZ_D_ScreenDisplay();
+    //VIZDOOM_CODE
+    static const bool turboSkipStaticNoop =
+        std::getenv("VIZDOOM_TURBO_SKIP_STATIC_NOOP_RENDER") != NULL;
+    static const bool turboSkipTerminalRender =
+        std::getenv("VIZDOOM_TURBO_SKIP_TERMINAL_RENDER") != NULL;
+    const bool skipStaticNoop =
+        *viz_turbo_profile || turboSkipStaticNoop;
+    if (skipStaticNoop && vizTurboStaticNoopEligible) {
+        for (size_t i = 0; i < VIZ_BT_COUNT; ++i) {
+            if (vizInput->BT_AVAILABLE[i] && vizInput->BT[i] != 0) {
+                vizTurboStaticNoopEligible = false;
+                break;
+            }
+        }
+    }
+    const bool skipTerminalRender =
+        (*viz_turbo_profile || turboSkipTerminalRender) &&
+        vizPendingTics > 0 && VIZ_BatchEnded();
+    bool screenRendered = false;
+    if (!skipTerminalRender &&
+        (!skipStaticNoop ||
+         vizPendingTics == 0 ||
+         !vizTurboStaticNoopEligible ||
+         !vizTurboStaticNoopRendered)) {
+        VIZ_D_ScreenDisplay();
+        screenRendered = true;
+        vizTurboStaticNoopRendered = true; //VIZDOOM_CODE
+    }
     VIZ_ScreenUpdate();
+    if (screenRendered) ++vizGameStateSM->SCREEN_UPDATE_SEQUENCE;
     VIZ_GameStateUpdate();
 
     vizLastUpdate = VIZ_TIME;

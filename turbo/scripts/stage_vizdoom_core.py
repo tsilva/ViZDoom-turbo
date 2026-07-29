@@ -13,9 +13,11 @@ import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
+
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PACKAGE_ROOT.parent
 STAGED_PACKAGE = PACKAGE_ROOT / "python" / "vizdoom"
+PREBUILT_CORE_ENV = "VIZDOOM_TURBO_PREBUILT_CORE"
 
 
 def built_package(repository: Path) -> Path:
@@ -125,6 +127,24 @@ def build_core(repository: Path) -> None:
 
 def build_and_stage() -> None:
     clean()
+    prebuilt = os.environ.get(PREBUILT_CORE_ENV)
+    if prebuilt:
+        source = Path(prebuilt).expanduser().resolve()
+        required = (source / "__init__.py", source / "vizdoom")
+        if not source.is_dir() or any(not path.is_file() for path in required):
+            raise RuntimeError(
+                f"{PREBUILT_CORE_ENV} must name a built vizdoom package directory"
+            )
+        if not any(source.glob("vizdoom*.so")) and not any(source.glob("vizdoom*.pyd")):
+            raise RuntimeError(
+                f"{PREBUILT_CORE_ENV} does not contain a Python extension"
+            )
+        shutil.copytree(
+            source,
+            STAGED_PACKAGE,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+        return
     with tempfile.TemporaryDirectory(prefix="vizdoom-turbo-core-") as directory:
         repository = Path(directory) / "ViZDoom"
         copy_core_source(repository)

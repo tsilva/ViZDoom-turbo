@@ -24,6 +24,9 @@
 
 #include <stddef.h>
 
+//VIZDOOM_CODE
+#include <cstdlib>
+
 #include "version.h"
 #include "menu/menu.h"
 #include "m_random.h"
@@ -64,6 +67,8 @@
 
 //VIZDOOM_CODE
 #include "viz_main.h"
+//VIZDOOM_CODE
+#include "viz_message_queue.h"
 #include "viz_system.h"
 
 EXTERN_CVAR (Bool, viz_controlled)
@@ -74,6 +79,14 @@ EXTERN_CVAR (Bool, viz_nosound)
 
 EXTERN_CVAR (Int, disableautosave)
 EXTERN_CVAR (Int, autosavecount)
+
+//VIZDOOM_CODE
+static bool VIZ_LegacyInputPolling()
+{
+	static const bool enabled =
+		std::getenv("VIZDOOM_TURBO_LEGACY_INPUT_POLLING") != NULL;
+	return enabled;
+}
 
 //#define SIMULATEERRORS		(RAND_MAX/3)
 #define SIMULATEERRORS			0
@@ -989,7 +1002,8 @@ void NetUpdate (void)
 	// build new ticcmds for console player
 	for (i = 0; i < newtics; i++)
 	{
-		I_StartTic ();
+		//VIZDOOM_CODE
+		if(!*viz_controlled || *viz_allow_input || VIZ_LegacyInputPolling()) I_StartTic ();
 		//VIZDOOM_CODE
 		if(!*viz_controlled || (*viz_async && *viz_allow_input)) D_ProcessEvents ();
 		if ((maketic - gametic) / ticdup >= BACKUPTICS/2-1) break; // can't hold any more
@@ -1824,6 +1838,42 @@ void TryRunTics (void)
 	int 		availabletics;
 	int 		counts;
 	int 		numplaying;
+
+	//VIZDOOM_CODE
+	if (*viz_controlled && !*viz_async && !netgame &&
+		VIZ_FusedTics() && vizPendingTics > 1)
+	{
+		P_UnPredictPlayer();
+		while (vizBatchTicsMade < vizPendingTics)
+		{
+			G_BuildTiccmd (&netcmds[consoleplayer][gametic % BACKUPTICS]);
+			if (advancedemo)
+			{
+				D_DoAdvanceDemo ();
+			}
+			C_Ticker ();
+			M_Ticker ();
+			I_GetTime (true);
+			G_Ticker ();
+			++gametic;
+			++maketic;
+			Net_NewMakeTic ();
+			GC::CheckGC ();
+			++vizBatchTicsMade;
+			if (VIZ_BatchEnded())
+			{
+				break;
+			}
+		}
+		P_PredictPlayer(&players[consoleplayer]);
+		nettics[0] = gametic;
+		resendto[0] = gametic;
+		oldentertics = gametic;
+		entertic = gametic;
+		gametime = gametic;
+		vizTime = gametic;
+		return;
+	}
 
 	// If paused, do not eat more CPU time than we need, because it
 	// will all be wasted anyway.

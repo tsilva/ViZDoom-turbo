@@ -76,6 +76,7 @@ namespace vizdoom {
         size_t actionWidth;
         size_t frameSize;
         size_t gameVariablesWidth;
+        std::vector<uint32_t> screenUpdateSequences;
 
         pyb::array_t<double, pyb::array::c_style> actions;
         pyb::array_t<uint8_t, pyb::array::c_style> frames;

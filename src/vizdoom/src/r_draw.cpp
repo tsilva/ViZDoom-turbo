@@ -30,7 +30,6 @@
 #include <emmintrin.h>
 #define VIZ_SPAN_SSE2
 #endif
-
 #include "templates.h"
 #include "doomdef.h"
 #include "i_system.h"
@@ -141,6 +140,7 @@ FDynamicColormap ShadeFakeColormap[16];
 BYTE identitymap[256];
 
 EXTERN_CVAR (Int, r_columnmethod)
+EXTERN_CVAR (Bool, viz_turbo_profile) //VIZDOOM_CODE
 
 
 void R_InitShadeMaps()
@@ -1026,27 +1026,38 @@ struct VIZSpanPairCache
 };
 
 //VIZDOOM_CODE
-static VIZSpanPairCache vizSpanPairs[16];
+struct VIZSpanOutputCache
+{
+	const BYTE *source;
+	const BYTE *colormap;
+	dsfixed_t xfrac;
+	dsfixed_t yfrac;
+	dsfixed_t xstep;
+	dsfixed_t ystep;
+	int count;
+	BYTE pixels[320];
+};
+
+//VIZDOOM_CODE
+static VIZSpanPairCache vizSpanPairs[256];
+//VIZDOOM_CODE
+static VIZSpanOutputCache vizSpanOutputs[4096];
 static bool vizSpanSourceCacheable;
 
 //VIZDOOM_CODE
 static inline const BYTE *VIZ_GetMappedSpanSource (const BYTE *source, const BYTE *colormap)
 {
 	size_t slot = (((size_t)source >> 6) ^ ((size_t)colormap >> 8)) & (countof(vizSpanPairs) - 1);
-	for (unsigned int probes = 0; probes < countof(vizSpanPairs); ++probes)
+	VIZSpanPairCache &entry = vizSpanPairs[slot];
+	if (entry.source == source && entry.colormap == colormap)
+		return entry.mapped;
+	if (entry.source == NULL)
 	{
-		VIZSpanPairCache &entry = vizSpanPairs[slot];
-		if (entry.source == source && entry.colormap == colormap)
-			return entry.mapped;
-		if (entry.source == NULL)
-		{
-			entry.source = source;
-			entry.colormap = colormap;
-			for (unsigned int i = 0; i < countof(entry.mapped); ++i)
-				entry.mapped[i] = colormap[source[i]];
-			return entry.mapped;
-		}
-		slot = (slot + 1) & (countof(vizSpanPairs) - 1);
+		entry.source = source;
+		entry.colormap = colormap;
+		for (unsigned int i = 0; i < countof(entry.mapped); ++i)
+			entry.mapped[i] = colormap[source[i]];
+		return entry.mapped;
 	}
 	return NULL;
 }
@@ -1303,6 +1314,185 @@ void VIZ_HOT R_DrawSpanP_C (void)
 			xfrac += xstep;
 			yfrac += ystep;
 		} while (--count);
+	}
+}
+
+//VIZDOOM_CODE
+static void VIZ_HOT VIZ_DrawSpanFastP_C (void)
+{
+	if (ds_xbits != 6 || ds_ybits != 6 ||
+		vizDepthMap != NULL || vizLabels != NULL)
+	{
+		R_DrawSpanP_C();
+		return;
+	}
+
+	dsfixed_t xfrac = ds_xfrac;
+	dsfixed_t yfrac = ds_yfrac;
+	const dsfixed_t xstep = ds_xstep;
+	const dsfixed_t ystep = ds_ystep;
+	BYTE *dest = ylookup[ds_y] + ds_x1 + dc_destorg;
+	const BYTE *source = ds_source;
+	const BYTE *colormap = ds_colormap;
+	int count = ds_x2 - ds_x1 + 1;
+
+	if (vizSpanSourceCacheable)
+	{
+		const BYTE *mappedSource = VIZ_GetMappedSpanSource(source, colormap);
+		if (mappedSource != NULL)
+		{
+			//VIZDOOM_CODE
+			static const unsigned int outputCacheSize = []()
+			{
+				const char *value = std::getenv("VIZDOOM_TURBO_SPAN_OUTPUT_CACHE");
+				if (value == NULL)
+					return *viz_turbo_profile ? 1024u : 0u;
+				if (strcmp(value, "4096") == 0)
+					return 4096u;
+				if (strcmp(value, "256") == 0)
+					return 256u;
+				return 1024u;
+			}();
+			VIZSpanOutputCache *outputCache = NULL;
+			BYTE *const spanDest = dest;
+			const int spanCount = count;
+			if (outputCacheSize != 0 && count <= 320)
+			{
+				size_t slot = ((size_t)source >> 6) ^ ((size_t)colormap >> 8);
+				slot ^= (size_t)xfrac ^ ((size_t)yfrac >> 7);
+				slot ^= ((size_t)xstep >> 13) ^ ((size_t)ystep >> 19);
+				slot ^= (size_t)count * 0x9e3779b1u;
+				outputCache = &vizSpanOutputs[slot & (outputCacheSize - 1)];
+				if (outputCache->source == source &&
+					outputCache->colormap == colormap &&
+					outputCache->xfrac == xfrac &&
+					outputCache->yfrac == yfrac &&
+					outputCache->xstep == xstep &&
+					outputCache->ystep == ystep &&
+					outputCache->count == count)
+				{
+					memcpy(dest, outputCache->pixels, count);
+					return;
+				}
+			}
+#ifdef VIZ_SPAN_SSE2
+			if (count >= 4)
+			{
+				const dsfixed_t xfrac1 = xfrac + xstep;
+				const dsfixed_t xfrac2 = xfrac1 + xstep;
+				const dsfixed_t xfrac3 = xfrac2 + xstep;
+				const dsfixed_t yfrac1 = yfrac + ystep;
+				const dsfixed_t yfrac2 = yfrac1 + ystep;
+				const dsfixed_t yfrac3 = yfrac2 + ystep;
+				__m128i xfracs = _mm_setr_epi32((int)xfrac, (int)xfrac1, (int)xfrac2, (int)xfrac3);
+				__m128i yfracs = _mm_setr_epi32((int)yfrac, (int)yfrac1, (int)yfrac2, (int)yfrac3);
+				const __m128i xsteps = _mm_set1_epi32((int)(xstep*4));
+				const __m128i ysteps = _mm_set1_epi32((int)(ystep*4));
+				const __m128i xmask = _mm_set1_epi32(63*64);
+				while (count >= 8)
+				{
+					__m128i nextXfracs = _mm_add_epi32(xfracs, xsteps);
+					__m128i nextYfracs = _mm_add_epi32(yfracs, ysteps);
+					__m128i spots0 = _mm_or_si128(
+						_mm_and_si128(_mm_srli_epi32(xfracs, 32-6-6), xmask),
+						_mm_srli_epi32(yfracs, 32-6));
+					__m128i spots1 = _mm_or_si128(
+						_mm_and_si128(_mm_srli_epi32(nextXfracs, 32-6-6), xmask),
+						_mm_srli_epi32(nextYfracs, 32-6));
+					dest[0] = mappedSource[_mm_extract_epi16(spots0, 0)];
+					dest[1] = mappedSource[_mm_extract_epi16(spots0, 2)];
+					dest[2] = mappedSource[_mm_extract_epi16(spots0, 4)];
+					dest[3] = mappedSource[_mm_extract_epi16(spots0, 6)];
+					dest[4] = mappedSource[_mm_extract_epi16(spots1, 0)];
+					dest[5] = mappedSource[_mm_extract_epi16(spots1, 2)];
+					dest[6] = mappedSource[_mm_extract_epi16(spots1, 4)];
+					dest[7] = mappedSource[_mm_extract_epi16(spots1, 6)];
+					dest += 8;
+					xfracs = _mm_add_epi32(nextXfracs, xsteps);
+					yfracs = _mm_add_epi32(nextYfracs, ysteps);
+					count -= 8;
+				}
+				while (count >= 4)
+				{
+					__m128i spots = _mm_or_si128(
+						_mm_and_si128(_mm_srli_epi32(xfracs, 32-6-6), xmask),
+						_mm_srli_epi32(yfracs, 32-6));
+					dest[0] = mappedSource[_mm_extract_epi16(spots, 0)];
+					dest[1] = mappedSource[_mm_extract_epi16(spots, 2)];
+					dest[2] = mappedSource[_mm_extract_epi16(spots, 4)];
+					dest[3] = mappedSource[_mm_extract_epi16(spots, 6)];
+					dest += 4;
+					xfracs = _mm_add_epi32(xfracs, xsteps);
+					yfracs = _mm_add_epi32(yfracs, ysteps);
+					count -= 4;
+				}
+				xfrac = (dsfixed_t)_mm_cvtsi128_si32(xfracs);
+				yfrac = (dsfixed_t)_mm_cvtsi128_si32(yfracs);
+			}
+#else
+			while (count >= 4)
+			{
+				const dsfixed_t xfrac1 = xfrac + xstep;
+				const dsfixed_t xfrac2 = xfrac1 + xstep;
+				const dsfixed_t xfrac3 = xfrac2 + xstep;
+				const dsfixed_t yfrac1 = yfrac + ystep;
+				const dsfixed_t yfrac2 = yfrac1 + ystep;
+				const dsfixed_t yfrac3 = yfrac2 + ystep;
+				dest[0] = mappedSource[((xfrac >>(32-6-6))&(63*64)) + (yfrac >>(32-6))];
+				dest[1] = mappedSource[((xfrac1>>(32-6-6))&(63*64)) + (yfrac1>>(32-6))];
+				dest[2] = mappedSource[((xfrac2>>(32-6-6))&(63*64)) + (yfrac2>>(32-6))];
+				dest[3] = mappedSource[((xfrac3>>(32-6-6))&(63*64)) + (yfrac3>>(32-6))];
+				dest += 4;
+				xfrac = xfrac3 + xstep;
+				yfrac = yfrac3 + ystep;
+				count -= 4;
+			}
+#endif
+			while (count-- > 0)
+			{
+				const int spot = ((xfrac>>(32-6-6))&(63*64)) + (yfrac>>(32-6));
+				*dest++ = mappedSource[spot];
+				xfrac += xstep;
+				yfrac += ystep;
+			}
+			if (outputCache != NULL)
+			{
+				memcpy(outputCache->pixels, spanDest, spanCount);
+				outputCache->source = source;
+				outputCache->colormap = colormap;
+				outputCache->xfrac = ds_xfrac;
+				outputCache->yfrac = ds_yfrac;
+				outputCache->xstep = xstep;
+				outputCache->ystep = ystep;
+				outputCache->count = spanCount;
+			}
+			return;
+		}
+	}
+
+	while (count >= 4)
+	{
+		const dsfixed_t xfrac1 = xfrac + xstep;
+		const dsfixed_t xfrac2 = xfrac1 + xstep;
+		const dsfixed_t xfrac3 = xfrac2 + xstep;
+		const dsfixed_t yfrac1 = yfrac + ystep;
+		const dsfixed_t yfrac2 = yfrac1 + ystep;
+		const dsfixed_t yfrac3 = yfrac2 + ystep;
+		dest[0] = colormap[source[((xfrac >>(32-6-6))&(63*64)) + (yfrac >>(32-6))]];
+		dest[1] = colormap[source[((xfrac1>>(32-6-6))&(63*64)) + (yfrac1>>(32-6))]];
+		dest[2] = colormap[source[((xfrac2>>(32-6-6))&(63*64)) + (yfrac2>>(32-6))]];
+		dest[3] = colormap[source[((xfrac3>>(32-6-6))&(63*64)) + (yfrac3>>(32-6))]];
+		dest += 4;
+		xfrac = xfrac3 + xstep;
+		yfrac = yfrac3 + ystep;
+		count -= 4;
+	}
+	while (count-- > 0)
+	{
+		const int spot = ((xfrac>>(32-6-6))&(63*64)) + (yfrac>>(32-6));
+		*dest++ = colormap[source[spot]];
+		xfrac += xstep;
+		yfrac += ystep;
 	}
 }
 
@@ -1769,6 +1959,7 @@ void setupvline (int fracbits)
 {
 	vlinebits = fracbits;
 }
+
 //VIZDOOM_CODE
 DWORD STACK_ARGS vlinec1 ()
 {
@@ -2351,7 +2542,12 @@ void R_InitColumnDrawers ()
 	R_DrawFuzzColumn			= R_DrawFuzzColumnP_C;
 	R_DrawTranslatedColumn		= R_DrawTranslatedColumnP_C;
 	R_DrawShadedColumn			= R_DrawShadedColumnP_C;
-	R_DrawSpan					= R_DrawSpanP_C;
+	//VIZDOOM_CODE
+	R_DrawSpan					=
+		(*viz_turbo_profile ||
+		 std::getenv("VIZDOOM_TURBO_COMPACT_SPAN") != NULL)
+			? VIZ_DrawSpanFastP_C
+			: R_DrawSpanP_C;
 	R_DrawSpanMasked			= R_DrawSpanMaskedP_C;
 	rt_map4cols					= rt_map4cols_c;
 

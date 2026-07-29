@@ -77,6 +77,8 @@ namespace vizdoom {
 #define MSG_CODE_CLOSE                  25
 #define MSG_CODE_TICS                   27
 #define MSG_CODE_TICS_AND_UPDATE        28
+#define MSG_CODE_TURBO_RESET            29
+#define MSG_CODE_TURBO_FAST_IPC         30
 
 /* OSes */
 #ifdef __linux__
@@ -113,7 +115,11 @@ namespace vizdoom {
             const std::string *fixedCount = nullptr);
         void finishTicsBatched();
         void ticsBatched(unsigned int tics, bool update = true);
+        //VIZDOOM_CODE
+        void enableFastIPC();
         void restartMap(std::string demoPath = "");
+        //VIZDOOM_CODE
+        void restartMapBatched();
         void respawnPlayer();
         bool isDoomRunning();
         void sendCommand(std::string command);
@@ -197,6 +203,7 @@ namespace vizdoom {
         unsigned int getScreenHeight();
         void setScreenHeight(unsigned int height);
         ScreenFormat getScreenFormat();
+        uint32_t getScreenUpdateSequence() const;
 
         void setScreenFormat(ScreenFormat format);
         unsigned int getScreenChannels();
@@ -316,8 +323,12 @@ namespace vizdoom {
         bool doomRunning;
         bool doomWorking;
         bool batchInFlight;
+        bool fastIPC;
+        uint32_t fastCommandSequence;
         unsigned int lastBatchTicsMade;
 
+        void sendToDoom(uint8_t code, const char *command = nullptr, uint32_t value = 0);
+        Message receiveFromDoom();
         bool receiveMQMsg();
         void waitForDoomStart();
         void waitForDoomWork();

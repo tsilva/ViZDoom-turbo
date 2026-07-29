@@ -130,6 +130,7 @@ namespace vizdoom {
         size_t SCREEN_SIZE;
         int SCREEN_FORMAT;
         uint8_t SCREEN_PALETTE[256 * 3];
+        uint32_t SCREEN_UPDATE_SEQUENCE;
 
         // BUFFERS
         bool DEPTH_BUFFER;
@@ -218,6 +219,18 @@ namespace vizdoom {
         // TEXT CONSOLE LOG
         unsigned int NOTIFICATIONS_TEXT_SIZE;
         char NOTIFICATIONS_TEXT[MAX_NOTIFICATIONS_CHARS];
+
+        // TURBO IPC
+        uint32_t FAST_COMMAND_SEQUENCE;
+        uint32_t FAST_RECEIVED_SEQUENCE;
+        uint32_t FAST_DONE_SEQUENCE;
+        uint8_t FAST_COMMAND_CODE;
+        uint8_t FAST_RESPONSE_CODE;
+        uint16_t FAST_RESERVED;
+        uint32_t FAST_COMMAND_VALUE;
+        uint32_t FAST_RESPONSE_VALUE;
+        char FAST_COMMAND[128];
+        char FAST_RESPONSE[128];
     };
 
     struct SMInputState {

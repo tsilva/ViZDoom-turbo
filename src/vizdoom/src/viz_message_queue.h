@@ -50,16 +50,19 @@ extern bip::message_queue *vizMQDoom;
 #define VIZ_MSG_CODE_ERROR 26
 #define VIZ_MSG_CODE_TICS 27
 #define VIZ_MSG_CODE_TICS_AND_UPDATE 28
+#define VIZ_MSG_CODE_TURBO_RESET 29
+#define VIZ_MSG_CODE_TURBO_FAST_IPC 30
 
 
 struct VIZMessage{
     uint8_t code;
+    uint32_t value;
     char command[VIZ_MQ_MAX_CMD_LEN];
 };
 
 void VIZ_MQInit(const char * id);
 
-void VIZ_MQSend(uint8_t code, const char * command = nullptr);
+void VIZ_MQSend(uint8_t code, const char * command = nullptr, uint32_t value = 0);
 void VIZ_MQReceive(void *msg);
 bool VIZ_MQTryReceive(void *msg);
 
@@ -70,5 +73,10 @@ void VIZ_MQClose();
 extern unsigned int vizPendingTics;
 extern unsigned int vizBatchTicsMade;
 extern bool vizBatchUpdate;
+extern bool vizTurboReset;
+extern bool vizTurboResetStarted;
+extern unsigned int vizTurboResetInitialTic;
+extern unsigned int vizTurboResetTargetTic;
+extern bool vizFastIPC;
 
 #endif

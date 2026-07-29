@@ -36,6 +36,10 @@ void VIZ_Init();
 
 void VIZ_AsyncStartTic();
 
+bool VIZ_FusedTics();
+
+bool VIZ_BatchEnded();
+
 void VIZ_Tic();
 
 void VIZ_Update();

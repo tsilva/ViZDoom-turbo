@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import statistics
 import subprocess
 from pathlib import Path
+
 
 _SCALING_PROFILE = "scaling"
 _RLAB_PROFILE = "rlab-32x32"
@@ -19,6 +21,13 @@ def _positive_int(value: str) -> int:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("value must be positive")
     return parsed
+
+
+def _environment_assignment(value: str) -> tuple[str, str]:
+    name, separator, setting = value.partition("=")
+    if not separator or not name:
+        raise argparse.ArgumentTypeError("environment values must use NAME=VALUE")
+    return name, setting
 
 
 def _percentile(sorted_values: list[float], probability: float) -> float:
@@ -45,6 +54,7 @@ def _run(
     num_envs: str,
     warmup_steps: int,
     measured_steps: int,
+    environment: dict[str, str],
 ) -> dict:
     command = [
         str(python),
@@ -68,6 +78,7 @@ def _run(
         capture_output=True,
         text=True,
         cwd=benchmark.parent,
+        env={**os.environ, **environment},
     )
     return json.loads(completed.stdout)
 
@@ -85,8 +96,26 @@ def main() -> int:
     parser.add_argument("--pairs", type=_positive_int, default=7)
     parser.add_argument("--warmup-steps", type=_positive_int, default=40)
     parser.add_argument("--measured-steps", type=_positive_int, default=250)
+    parser.add_argument(
+        "--baseline-env",
+        action="append",
+        default=[],
+        type=_environment_assignment,
+        metavar="NAME=VALUE",
+    )
+    parser.add_argument(
+        "--candidate-env",
+        action="append",
+        default=[],
+        type=_environment_assignment,
+        metavar="NAME=VALUE",
+    )
     args = parser.parse_args()
     benchmark = Path(__file__).with_name("benchmark_sps.py").resolve()
+    environments = {
+        "baseline": dict(args.baseline_env),
+        "candidate": dict(args.candidate_env),
+    }
 
     paired: dict[str, list[dict[str, float]]] = {}
     provenance = {}
@@ -107,6 +136,7 @@ def main() -> int:
                 num_envs=args.num_envs,
                 warmup_steps=args.warmup_steps,
                 measured_steps=args.measured_steps,
+                environment=environments[label],
             )
             provenance[label] = {
                 "python": str(python),
@@ -160,6 +190,8 @@ def main() -> int:
                     "warmup_steps": args.warmup_steps,
                     "measured_steps": args.measured_steps,
                     "alternating_order": True,
+                    "baseline_env": environments["baseline"],
+                    "candidate_env": environments["candidate"],
                 },
                 "results": summary,
             },

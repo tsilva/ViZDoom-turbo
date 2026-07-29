@@ -91,6 +91,8 @@ struct VIZInputState{
     double CMD_BT[VIZ_BT_COUNT]; // Parsed cmd->ucmd.buttons
 };
 
+extern VIZInputState *vizInput;
+
 void VIZ_Command(char *cmd);
 
 bool VIZ_CommmandFilter(const char *cmd);

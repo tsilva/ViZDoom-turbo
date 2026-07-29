@@ -58,7 +58,7 @@ namespace vizdoom {
                 if (i == 0 && !regionPtr->address) {
                     regionPtr->offset = 0;
                     regionPtr->size = sizeof(SMGameState);
-                    regionPtr->writeable = false;
+                    regionPtr->writeable = true;
                     this->mapRegion(regionPtr);
                 } else if (!regionPtr->address ||
                            (regionPtr->offset != this->getGameState()->SM_REGION_OFFSET[i]

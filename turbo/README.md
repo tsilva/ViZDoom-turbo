@@ -245,10 +245,12 @@ uv run ruff check .                                       # lint Python
 cargo fmt --check                                         # check Rust formatting
 cargo clippy --all-targets --all-features -- -D warnings  # lint Rust
 uv build --wheel                                          # build the distributable wheel
+VIZDOOM_TURBO_PREBUILT_CORE=/path/to/vizdoom uv build --wheel
+                                                             # package a validated optimized core
 uv run python benchmarks/benchmark_sps.py                 # measure the canonical SPS profile
 ```
 
-For release-to-release checks, use `benchmarks/compare_contract.py` to compare deterministic traces and `benchmarks/compare_sps.py` for alternating paired SPS measurements. Both commands accept separate baseline and candidate Python interpreters so the released wheel and working tree stay isolated.
+For release-to-release checks, use `benchmarks/compare_contract.py` to compare deterministic traces and `benchmarks/compare_sps.py` for alternating paired SPS measurements. Both commands accept separate baseline and candidate Python interpreters and optional `--baseline-env`/`--candidate-env` assignments, so released wheels, working trees, and runtime feature gates stay isolated.
 
 ## Notes
 

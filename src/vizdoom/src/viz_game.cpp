@@ -317,7 +317,7 @@ void VIZ_GameStateInit(){
 
     try {
         VIZSMRegion* gameStateRegion = &VIZ_SM_GAMESTATE;
-        VIZ_SMCreateRegion(gameStateRegion, false, 0, sizeof(VIZGameState));
+        VIZ_SMCreateRegion(gameStateRegion, true, 0, sizeof(VIZGameState));
         vizGameStateSM = static_cast<VIZGameState *>(gameStateRegion->address);
 
         VIZ_DebugMsg(1, VIZ_FUNC, "gameStateOffset: %zu, gameStateSize: %zu", gameStateRegion->offset,
@@ -335,6 +335,14 @@ void VIZ_GameStateInit(){
     vizGameStateSM->PLAYER_HEALTH = 0;
     vizGameStateSM->PLAYER_HAS_ACTOR = false;
     vizGameStateSM->PLAYER_DEAD = true;
+    vizGameStateSM->SCREEN_UPDATE_SEQUENCE = 0;
+    vizGameStateSM->FAST_COMMAND_SEQUENCE = 0;
+    vizGameStateSM->FAST_RECEIVED_SEQUENCE = 0;
+    vizGameStateSM->FAST_DONE_SEQUENCE = 0;
+    vizGameStateSM->FAST_COMMAND_CODE = 0;
+    vizGameStateSM->FAST_RESPONSE_CODE = 0;
+    vizGameStateSM->FAST_COMMAND_VALUE = 0;
+    vizGameStateSM->FAST_RESPONSE_VALUE = 0;
 
     for(int i = 0; i < 9; ++i){
         vizGameStateSM->PLAYER_MOVEMENT[i] = 0;

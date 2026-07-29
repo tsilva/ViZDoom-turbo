@@ -23,6 +23,7 @@
 #include "ViZDoomTurboBatch.h"
 #include "ViZDoomController.h"
 
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -90,6 +91,8 @@ namespace vizdoom {
                 game->getAvailableGameVariablesSize() != this->gameVariablesWidth) {
                 throw std::invalid_argument("all games must have identical Turbo layouts");
             }
+            this->screenUpdateSequences.push_back(
+                game->doomController->getScreenUpdateSequence());
         }
 
         requireShape(this->actions, {laneCount, static_cast<pyb::ssize_t>(this->actionWidth)}, "actions");
@@ -110,6 +113,13 @@ namespace vizdoom {
         this->terminatedData = this->terminated.mutable_data();
         this->truncatedData = this->truncated.mutable_data();
         this->gameVariablesData = this->gameVariables.mutable_data();
+
+        if (std::getenv("VIZDOOM_TURBO_FAST_IPC") != nullptr) {
+            ReleaseGIL gil;
+            for (DoomGamePython *game : this->games) {
+                game->doomController->enableFastIPC();
+            }
+        }
     }
 
     void TurboBatchStepper::stepLaneInto(size_t lane) {
@@ -197,8 +207,14 @@ namespace vizdoom {
             TurboBatchStepper *stepper = static_cast<TurboBatchStepper *>(context);
             if (lane >= stepper->games.size()) return 4;
             stepper->finishLaneNative(lane);
+            const uint32_t screenUpdateSequence =
+                stepper->games[lane]->doomController->getScreenUpdateSequence();
+            const bool screenUnchanged =
+                screenUpdateSequence == stepper->screenUpdateSequences[lane];
+            stepper->screenUpdateSequences[lane] = screenUpdateSequence;
             return (stepper->terminatedData[lane] ? 1u : 0u) |
-                (stepper->truncatedData[lane] ? 2u : 0u);
+                (stepper->truncatedData[lane] ? 2u : 0u) |
+                (screenUnchanged ? 8u : 0u);
         }
         catch (...) {
             return 4;
@@ -213,7 +229,13 @@ namespace vizdoom {
             TurboBatchStepper *stepper = static_cast<TurboBatchStepper *>(context);
             if (lane >= stepper->games.size()) return 4;
             stepper->resetLaneNative(lane, seed);
+            stepper->screenUpdateSequences[lane] =
+                stepper->games[lane]->doomController->getScreenUpdateSequence();
             return 0;
+        }
+        catch (const std::exception &error) {
+            std::fprintf(stderr, "turbo reset failed: %s\n", error.what());
+            return 4;
         }
         catch (...) {
             return 4;

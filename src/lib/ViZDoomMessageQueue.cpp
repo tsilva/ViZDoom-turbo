@@ -24,6 +24,8 @@
 #include "ViZDoomMessageQueue.h"
 #include "ViZDoomExceptions.h"
 
+#include <cstddef>
+
 namespace vizdoom {
 
     MessageQueue::MessageQueue(std::string name) : name(name) {
@@ -55,13 +57,17 @@ namespace vizdoom {
         }
     }
 
-    void MessageQueue::send(uint8_t code, const char *command) {
-        Message msg;
+    void MessageQueue::send(uint8_t code, const char *command, uint32_t value) {
+        Message msg = {};
         msg.code = code;
+        msg.value = value;
         if (command) strncpy(msg.command, command, MQ_MAX_CMD_LEN);
 
         try {
-            this->mq->send(&msg, sizeof(Message), 0);
+            this->mq->send(
+                &msg,
+                command ? sizeof(Message) : offsetof(Message, command),
+                0);
         }
         catch(bip::interprocess_exception& ex) {
             throw MessageQueueException(std::string("Failed to send message: ") + std::string(ex.what()));

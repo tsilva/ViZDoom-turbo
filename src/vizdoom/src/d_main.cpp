@@ -35,6 +35,9 @@
 
 #include <float.h>
 
+//VIZDOOM_CODE
+#include <cstdlib>
+
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>
 #endif
@@ -117,6 +120,23 @@ EXTERN_CVAR (Bool, viz_async)
 EXTERN_CVAR (Bool, viz_allow_input)
 EXTERN_CVAR (Bool, viz_nosound)
 EXTERN_CVAR (Bool, viz_render_all)
+EXTERN_CVAR (Bool, viz_noxserver) //VIZDOOM_CODE
+
+//VIZDOOM_CODE
+static bool VIZ_LegacyInputPolling()
+{
+	static const bool enabled =
+		std::getenv("VIZDOOM_TURBO_LEGACY_INPUT_POLLING") != NULL;
+	return enabled;
+}
+
+//VIZDOOM_CODE
+static bool VIZ_HeadlessDisplay()
+{
+	static const bool enabled =
+		std::getenv("VIZDOOM_TURBO_HEADLESS_DISPLAY") != NULL;
+	return enabled;
+}
 
 EXTERN_CVAR(Bool, hud_althud)
 void DrawHUD();
@@ -912,6 +932,13 @@ void D_Display ()
 		GSnd->DrawWaveDebug(snd_drawoutput);
 	}
 
+	//VIZDOOM_CODE
+	if (*viz_controlled && *viz_noxserver && VIZ_HeadlessDisplay() && (!wipe || NoWipe < 0))
+	{
+		screen->Update ();
+		return;
+	}
+
 	if (!wipe || NoWipe < 0)
 	{
 		NetUpdate ();			// send out any new accumulation
@@ -1234,7 +1261,9 @@ void D_DoomLoop ()
 			}
 
 			// Update display, next frame, with current state.
-			I_StartTic ();
+			//VIZDOOM_CODE
+			if(!*viz_controlled || *viz_allow_input || VIZ_LegacyInputPolling())
+				I_StartTic ();
 			if(!*viz_controlled || *viz_render_all) D_Display();
 			if(!*viz_controlled || !*viz_nosound) S_UpdateMusic(); // OpenAL needs this to keep the music running, thanks to a complete lack of a sane streaming implementation using callbacks. :(
 

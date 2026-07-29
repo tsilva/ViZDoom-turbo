@@ -38,7 +38,8 @@ const INDEXED_AREA_CHANNEL_BITS: u32 = 20;
 const INDEXED_AREA_CHANNEL_MASK: u64 = (1 << INDEXED_AREA_CHANNEL_BITS) - 1;
 const INDEXED_HISTORY_CAPACITY: usize = 16;
 const INDEXED_TILE_SIZE: usize = 16;
-const INDEXED_TILE_SAMPLES: usize = 32;
+const INDEXED_TILE_SAMPLES: usize = 8;
+const INDEXED_SHARED_TILE_CAPACITY: usize = 16;
 const INDEXED_TILE_COLUMNS: usize = 84_usize.div_ceil(INDEXED_TILE_SIZE);
 const INDEXED_TILE_ROWS: usize = 84_usize.div_ceil(INDEXED_TILE_SIZE);
 const INDEXED_TILE_COUNT: usize = INDEXED_TILE_COLUMNS * INDEXED_TILE_ROWS;
@@ -724,12 +725,165 @@ impl ImagePlan {
         true
     }
 
+    #[inline]
+    fn indexed_shared_tile_equal(&self, current: &[u8], tile: usize, cached: &[u8]) -> bool {
+        let descriptor = unsafe { self.indexed_tiles.get_unchecked(tile) };
+        let width = descriptor.source_x_end - descriptor.source_x_start;
+        for (row, y) in (descriptor.source_y_start..descriptor.source_y_end).enumerate() {
+            let current_start = y * self.raw_w + descriptor.source_x_start;
+            let cached_start = row * width;
+            if current[current_start..current_start + width]
+                != cached[cached_start..cached_start + width]
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn capture_indexed_shared_tile_into(
+        &self,
+        current: &[u8],
+        palette: &[u8],
+        output: &[u8],
+        tile: usize,
+        fingerprint: u64,
+        entry: &mut IndexedSharedTileEntry,
+    ) {
+        let descriptor = unsafe { self.indexed_tiles.get_unchecked(tile) };
+        let source_width = descriptor.source_x_end - descriptor.source_x_start;
+        let source_height = descriptor.source_y_end - descriptor.source_y_start;
+        entry.fingerprint = fingerprint;
+        entry.palette.copy_from_slice(palette);
+        entry.source.clear();
+        entry.source.reserve(source_width * source_height);
+        for y in descriptor.source_y_start..descriptor.source_y_end {
+            let start = y * self.raw_w + descriptor.source_x_start;
+            entry
+                .source
+                .extend_from_slice(&current[start..start + source_width]);
+        }
+        let output_width = descriptor.output_x_end - descriptor.output_x_start;
+        let output_height = descriptor.output_y_end - descriptor.output_y_start;
+        entry.output.clear();
+        entry.output.reserve(output_width * output_height);
+        for out_y in descriptor.output_y_start..descriptor.output_y_end {
+            let start = out_y * self.out_w + descriptor.output_x_start;
+            entry
+                .output
+                .extend_from_slice(&output[start..start + output_width]);
+        }
+    }
+
+    #[inline]
+    fn copy_indexed_shared_tile_output(&self, cached: &[u8], output: &mut [u8], tile: usize) {
+        let descriptor = unsafe { self.indexed_tiles.get_unchecked(tile) };
+        let width = descriptor.output_x_end - descriptor.output_x_start;
+        for (row, out_y) in (descriptor.output_y_start..descriptor.output_y_end).enumerate() {
+            let output_start = out_y * self.out_w + descriptor.output_x_start;
+            let cached_start = row * width;
+            output[output_start..output_start + width]
+                .copy_from_slice(&cached[cached_start..cached_start + width]);
+        }
+    }
+
+    fn write_indexed_tile(
+        &self,
+        current: &[u8],
+        palette: &[u8],
+        palette_rgb: &[u64; 256],
+        output: &mut [u8],
+        tile: usize,
+    ) {
+        let descriptor = unsafe { self.indexed_tiles.get_unchecked(tile) };
+        for out_y in descriptor.output_y_start..descriptor.output_y_end {
+            for out_x in descriptor.output_x_start..descriptor.output_x_end {
+                let output_offset = out_y * self.out_w + out_x;
+                let packed_rgb = self.area_indexed_packed_rgb(current, palette_rgb, out_y, out_x);
+                output[output_offset] = Self::grayscale(
+                    self.area_indexed_rgb_from_packed(current, palette, out_y, out_x, packed_rgb),
+                );
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_indexed_tile_shared(
+        &self,
+        current: &[u8],
+        palette: &[u8],
+        palette_rgb: &[u64; 256],
+        output: &mut [u8],
+        tile: usize,
+        fingerprint: u64,
+        shared_tile: &Mutex<IndexedSharedTileCache>,
+    ) {
+        {
+            let shared = shared_tile
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(entry) = shared.entries.iter().find(|entry| {
+                entry.fingerprint == fingerprint
+                    && entry.palette.as_slice() == palette
+                    && self.indexed_shared_tile_equal(current, tile, &entry.source)
+            }) {
+                self.copy_indexed_shared_tile_output(&entry.output, output, tile);
+                return;
+            }
+        }
+        self.write_indexed_tile(current, palette, palette_rgb, output, tile);
+        let mut shared = shared_tile
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if shared.entries.iter().any(|entry| {
+            entry.fingerprint == fingerprint
+                && entry.palette.as_slice() == palette
+                && self.indexed_shared_tile_equal(current, tile, &entry.source)
+        }) {
+            return;
+        }
+        if shared.entries.len() < INDEXED_SHARED_TILE_CAPACITY {
+            let descriptor = unsafe { self.indexed_tiles.get_unchecked(tile) };
+            let source_area = (descriptor.source_x_end - descriptor.source_x_start)
+                * (descriptor.source_y_end - descriptor.source_y_start);
+            let output_area = (descriptor.output_x_end - descriptor.output_x_start)
+                * (descriptor.output_y_end - descriptor.output_y_start);
+            let mut entry = IndexedSharedTileEntry {
+                fingerprint,
+                palette: vec![0; palette.len()],
+                source: Vec::with_capacity(source_area),
+                output: Vec::with_capacity(output_area),
+            };
+            self.capture_indexed_shared_tile_into(
+                current,
+                palette,
+                output,
+                tile,
+                fingerprint,
+                &mut entry,
+            );
+            shared.entries.push(entry);
+        } else {
+            let cursor = shared.cursor;
+            self.capture_indexed_shared_tile_into(
+                current,
+                palette,
+                output,
+                tile,
+                fingerprint,
+                &mut shared.entries[cursor],
+            );
+            shared.cursor = (cursor + 1) % INDEXED_SHARED_TILE_CAPACITY;
+        }
+    }
+
     fn write_indexed_frame_cached(
         &self,
         current: &[u8],
         palette: &[u8],
         cache: &mut IndexedAreaCache,
         output: &mut [u8],
+        shared_tiles: Option<&[Mutex<IndexedSharedTileCache>]>,
     ) {
         if !cache.valid || cache.palette != palette {
             cache.palette_rgb = Self::packed_palette(palette);
@@ -799,16 +953,27 @@ impl ImagePlan {
                     cache.output[start..end].copy_from_slice(&snapshot.output[start..end]);
                 }
             } else {
-                for out_y in output_y_start..output_y_end {
-                    for out_x in output_x_start..output_x_end {
-                        let output_offset = out_y * self.out_w + out_x;
-                        let packed_rgb =
-                            self.area_indexed_packed_rgb(current, &cache.palette_rgb, out_y, out_x);
-                        cache.output[output_offset] =
-                            Self::grayscale(self.area_indexed_rgb_from_packed(
-                                current, palette, out_y, out_x, packed_rgb,
-                            ));
-                    }
+                let mut shared_processed = false;
+                if let Some(tiles) = shared_tiles {
+                    self.write_indexed_tile_shared(
+                        current,
+                        palette,
+                        &cache.palette_rgb,
+                        &mut cache.output,
+                        tile,
+                        fingerprint,
+                        &tiles[tile],
+                    );
+                    shared_processed = true;
+                }
+                if !shared_processed {
+                    self.write_indexed_tile(
+                        current,
+                        palette,
+                        &cache.palette_rgb,
+                        &mut cache.output,
+                        tile,
+                    );
                 }
             }
             cache.tile_fingerprints[tile] = fingerprint;
@@ -851,6 +1016,27 @@ struct IndexedAreaSnapshot {
     tile_fingerprints: Vec<u64>,
 }
 
+struct IndexedSharedTileEntry {
+    fingerprint: u64,
+    palette: Vec<u8>,
+    source: Vec<u8>,
+    output: Vec<u8>,
+}
+
+struct IndexedSharedTileCache {
+    entries: Vec<IndexedSharedTileEntry>,
+    cursor: usize,
+}
+
+impl IndexedSharedTileCache {
+    fn new() -> Self {
+        Self {
+            entries: Vec::with_capacity(INDEXED_SHARED_TILE_CAPACITY),
+            cursor: 0,
+        }
+    }
+}
+
 impl IndexedAreaCache {
     fn new(raw_frame_size: usize, output_frame_size: usize) -> Self {
         Self {
@@ -874,6 +1060,9 @@ struct ImageProcessor {
     plan: ImagePlan,
     pool: ThreadPool,
     indexed_area_caches: Vec<Mutex<IndexedAreaCache>>,
+    indexed_shared_tiles: Vec<Mutex<IndexedSharedTileCache>>,
+    shared_tile_cache: bool,
+    frame_sequence: bool,
 }
 
 impl ImageProcessor {
@@ -993,7 +1182,8 @@ impl ImageProcessor {
         algorithm,
         frame_stack,
         layout,
-        num_threads
+        num_threads,
+        optimized_profile=false
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1010,6 +1200,7 @@ impl ImageProcessor {
         frame_stack: usize,
         layout: &str,
         num_threads: usize,
+        optimized_profile: bool,
     ) -> PyResult<Self> {
         if num_envs == 0
             || raw_height == 0
@@ -1050,8 +1241,22 @@ impl ImageProcessor {
         let available_threads = std::thread::available_parallelism()
             .map(usize::from)
             .unwrap_or(1);
+        let worker_threads = std::env::var("VIZDOOM_TURBO_POOL_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or_else(|| {
+                let requested_threads = if optimized_profile {
+                    num_threads.min(8)
+                } else {
+                    num_threads
+                };
+                requested_threads.min(num_envs).min(available_threads)
+            })
+            .min(num_threads)
+            .min(num_envs);
         let pool = ThreadPoolBuilder::new()
-            .num_threads(num_threads.min(num_envs).min(available_threads))
+            .num_threads(worker_threads)
             .thread_name(|index| format!("vizdoom-turbo-image-{index}"))
             .build()
             .map_err(|error| {
@@ -1071,6 +1276,13 @@ impl ImageProcessor {
                 })
                 .collect()
         };
+        let indexed_shared_tiles = if plan.indexed_tiles.is_empty() {
+            Vec::new()
+        } else {
+            (0..INDEXED_TILE_COUNT)
+                .map(|_| Mutex::new(IndexedSharedTileCache::new()))
+                .collect()
+        };
         Ok(Self {
             num_envs,
             frame_stack,
@@ -1078,6 +1290,11 @@ impl ImageProcessor {
             plan,
             pool,
             indexed_area_caches,
+            indexed_shared_tiles,
+            shared_tile_cache: optimized_profile
+                || std::env::var_os("VIZDOOM_TURBO_SHARED_TILE_CACHE").is_some(),
+            frame_sequence: optimized_profile
+                || std::env::var_os("VIZDOOM_TURBO_FRAME_SEQUENCE").is_some(),
         })
     }
 
@@ -1455,6 +1672,12 @@ impl ImageProcessor {
                                 before[destination..destination + image_frame_size]
                                     .copy_from_slice(&after[..image_frame_size]);
                             }
+                        } else if self.frame_sequence && status & 8 != 0 {
+                            let cache = self.indexed_area_caches[lane]
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            stack_lane[destination..destination + image_frame_size]
+                                .copy_from_slice(&cache.output);
                         } else {
                             let frame = unsafe {
                                 std::slice::from_raw_parts(
@@ -1476,6 +1699,8 @@ impl ImageProcessor {
                                 palette,
                                 &mut cache,
                                 &mut stack_lane[destination..destination + image_frame_size],
+                                self.shared_tile_cache
+                                    .then_some(self.indexed_shared_tiles.as_slice()),
                             );
                         }
                         *head = new_head as i64;
@@ -1613,6 +1838,8 @@ impl ImageProcessor {
                                 palette,
                                 &mut cache,
                                 &mut stack_lane[..image_frame_size],
+                                self.shared_tile_cache
+                                    .then_some(self.indexed_shared_tiles.as_slice()),
                             );
                             for slot in 1..self.frame_stack {
                                 stack_lane.copy_within(..image_frame_size, slot * image_frame_size);

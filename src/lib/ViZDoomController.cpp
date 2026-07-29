@@ -32,6 +32,8 @@
 #include <boost/chrono.hpp>
 #include <boost/lexical_cast.hpp>
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
 #include <ctime>
 #include <random>
 
@@ -40,6 +42,10 @@
 #else
     #include <unistd.h>
 #endif
+#ifdef OS_LINUX
+    #include <linux/futex.h>
+    #include <sys/syscall.h>
+#endif
 
 namespace vizdoom {
 
@@ -47,6 +53,24 @@ namespace vizdoom {
     namespace bc        = boost::chrono;
     namespace bfs       = boost::filesystem;
 
+#ifdef OS_LINUX
+    namespace {
+        void waitForSequence(uint32_t *address, uint32_t observed) {
+            while (__atomic_load_n(address, __ATOMIC_ACQUIRE) == observed) {
+                if (syscall(SYS_futex, address, FUTEX_WAIT, observed, nullptr, nullptr, 0) == -1 &&
+                    errno != EAGAIN && errno != EINTR) {
+                    throw MessageQueueException("Failed to wait for Turbo IPC.");
+                }
+            }
+        }
+
+        void wakeSequence(uint32_t *address) {
+            if (syscall(SYS_futex, address, FUTEX_WAKE, 1, nullptr, nullptr, 0) == -1) {
+                throw MessageQueueException("Failed to wake Turbo IPC.");
+            }
+        }
+    }
+#endif
 
     /* Public methods */
     /*----------------------------------------------------------------------------------------------------------------*/
@@ -72,6 +96,8 @@ namespace vizdoom {
         this->doomRunning = false;
         this->doomWorking = false;
         this->batchInFlight = false;
+        this->fastIPC = false;
+        this->fastCommandSequence = 0;
         this->lastBatchTicsMade = 0;
 
         this->mapStartTime = 1;
@@ -198,7 +224,7 @@ namespace vizdoom {
                 this->waitForDoomMapStartTime();
 
                 // Update state
-                this->MQDoom->send(MSG_CODE_UPDATE);
+                this->sendToDoom(MSG_CODE_UPDATE);
                 this->waitForDoomWork();
 
                 *this->input = *this->_input;
@@ -221,7 +247,7 @@ namespace vizdoom {
                 // Try to stop demo recording
                 if (this->gameState && this->gameState->DEMO_RECORDING){
                     this->sendCommand("stop");
-                    this->MQDoom->send(MSG_CODE_TIC);
+                    this->sendToDoom(MSG_CODE_TIC);
                     this->waitForDoomWork();
                 }
 
@@ -229,7 +255,7 @@ namespace vizdoom {
                 this->doomWorking = false;
                 
                 // Try to close Doom gently
-                this->MQDoom->send(MSG_CODE_CLOSE);
+                this->sendToDoom(MSG_CODE_CLOSE);
             }
 
             #ifdef OS_POSIX
@@ -272,6 +298,8 @@ namespace vizdoom {
         this->depthBuffer = nullptr;
         this->labelsBuffer = nullptr;
         this->automapBuffer = nullptr;
+        this->fastIPC = false;
+        this->fastCommandSequence = 0;
     }
 
     void DoomController::restart() {
@@ -289,8 +317,8 @@ namespace vizdoom {
 
             if (this->isTicPossible()) {
                 this->mapLastTic = this->gameState->MAP_TIC + 1;
-                if (update) this->MQDoom->send(MSG_CODE_TIC_AND_UPDATE);
-                else this->MQDoom->send(MSG_CODE_TIC);
+                if (update) this->sendToDoom(MSG_CODE_TIC_AND_UPDATE);
+                else this->sendToDoom(MSG_CODE_TIC);
                 this->waitForDoomWork();
             }
         } else throw ViZDoomIsNotRunningException();
@@ -313,7 +341,7 @@ namespace vizdoom {
             ++ticsMade;
 
             if (!this->isTicPossible() && i != tics - 1) {
-                this->MQDoom->send(MSG_CODE_UPDATE);
+                this->sendToDoom(MSG_CODE_UPDATE);
                 this->waitForDoomWork();
                 break;
             }
@@ -356,17 +384,12 @@ namespace vizdoom {
             }
         }
 
-        //VIZDOOM_CODE
-        std::string dynamicCount;
-        const std::string &count =
-            requestedTics == tics && fixedCount != nullptr
-            ? *fixedCount
-            : (dynamicCount = b::lexical_cast<std::string>(requestedTics));
         this->lastBatchTicsMade = 0;
         this->batchInFlight = true;
-        this->MQDoom->send(
+        this->sendToDoom(
             update ? MSG_CODE_TICS_AND_UPDATE : MSG_CODE_TICS,
-            count.c_str());
+            nullptr,
+            requestedTics);
     }
 
     void DoomController::finishTicsBatched() {
@@ -397,6 +420,38 @@ namespace vizdoom {
         this->finishTicsBatched();
     }
 
+    //VIZDOOM_CODE
+    void DoomController::enableFastIPC() {
+#ifdef OS_LINUX
+        if (!this->doomRunning) throw ViZDoomIsNotRunningException();
+        if (this->fastIPC) return;
+        this->MQDoom->send(MSG_CODE_TURBO_FAST_IPC);
+        this->waitForDoomWork();
+        this->fastCommandSequence = 0;
+        this->fastIPC = true;
+#endif
+    }
+
+    //VIZDOOM_CODE
+    void DoomController::restartMapBatched() {
+        if (!this->doomRunning || this->mapChanging ||
+            this->gameState->GAME_MULTIPLAYER || this->demoPath.length()) {
+            this->restartMap();
+            return;
+        }
+
+        this->forceDoomSeed(this->getNextDoomSeed());
+        this->sendCommand(std::string("map ") + this->map);
+        ++this->mapRestartCount;
+        this->mapChanging = true;
+        this->resetButtons();
+        this->sendCommand("viz_override_player 0");
+        this->sendToDoom(MSG_CODE_TURBO_RESET, nullptr, this->mapStartTime);
+        this->waitForDoomWork();
+        this->mapLastTic = this->gameState->MAP_TIC;
+        this->mapChanging = false;
+    }
+
 
 
     void DoomController::restartMap(std::string demoPath) {
@@ -414,14 +469,14 @@ namespace vizdoom {
                 do {
                     this->sendCommand(std::string("+use"));
 
-                    this->MQDoom->send(MSG_CODE_TIC);
+                    this->sendToDoom(MSG_CODE_TIC);
                     this->waitForDoomWork();
 
                     if(!isTicPossible()) return;
                 } while (this->gameState->PLAYER_DEAD);
 
                 this->sendCommand(std::string("-use"));
-                this->MQDoom->send(MSG_CODE_UPDATE);
+                this->sendToDoom(MSG_CODE_UPDATE);
                 this->waitForDoomWork();
 
                 this->input->BT_AVAILABLE[USE] = useAvailable;
@@ -433,7 +488,7 @@ namespace vizdoom {
 
     void DoomController::sendCommand(std::string command) {
         if (this->doomRunning && this->MQDoom && command.length() <= MQ_MAX_CMD_LEN)
-            this->MQDoom->send(MSG_CODE_COMMAND, command.c_str());
+            this->sendToDoom(MSG_CODE_COMMAND, command.c_str());
     }
 
     void DoomController::addCustomArg(std::string arg) {
@@ -496,7 +551,7 @@ namespace vizdoom {
                     else this->sendCommand(std::string("-use"));
                 }
 
-                this->MQDoom->send(MSG_CODE_TIC);
+                this->sendToDoom(MSG_CODE_TIC);
                 this->waitForDoomWork();
 
                 if (restartTics > 3 && !this->gameState->GAME_MULTIPLAYER) {
@@ -517,7 +572,7 @@ namespace vizdoom {
 
             this->sendCommand("viz_override_player 0");
 
-            this->MQDoom->send(MSG_CODE_UPDATE);
+            this->sendToDoom(MSG_CODE_UPDATE);
             this->waitForDoomWork();
 
             this->mapLastTic = this->gameState->MAP_TIC;
@@ -532,7 +587,7 @@ namespace vizdoom {
 
             // Workaround for some problems
             this->sendCommand(std::string("map ") + this->map);
-            this->MQDoom->send(MSG_CODE_TIC);
+            this->sendToDoom(MSG_CODE_TIC);
             this->waitForDoomWork();
 
             this->sendCommand(std::string("playdemo ") + prepareLmpFilePath(demoPath));
@@ -545,7 +600,7 @@ namespace vizdoom {
             do {
                 ++restartTics;
 
-                this->MQDoom->send(MSG_CODE_TIC);
+                this->sendToDoom(MSG_CODE_TIC);
                 this->waitForDoomWork();
 
                 if (restartTics > 3) {
@@ -559,7 +614,7 @@ namespace vizdoom {
 
             this->sendCommand(std::string("viz_override_player ") + b::lexical_cast<std::string>(player));
 
-            this->MQDoom->send(MSG_CODE_UPDATE);
+            this->sendToDoom(MSG_CODE_UPDATE);
             this->waitForDoomWork();
 
             this->mapLastTic = this->gameState->MAP_TIC;
@@ -920,6 +975,11 @@ namespace vizdoom {
         else return this->screenFormat;
     }
 
+    uint32_t DoomController::getScreenUpdateSequence() const {
+        if (this->doomRunning) return this->gameState->SCREEN_UPDATE_SEQUENCE;
+        else throw ViZDoomIsNotRunningException();
+    }
+
     size_t DoomController::getScreenSize() {
         if (this->doomRunning) return (size_t) this->gameState->SCREEN_SIZE;
         else return (size_t) this->screenChannels * this->screenWidth * this->screenHeight;
@@ -1267,18 +1327,75 @@ namespace vizdoom {
     /* Flow */
     /*----------------------------------------------------------------------------------------------------------------*/
 
+    void DoomController::sendToDoom(uint8_t code, const char *command, uint32_t value) {
+#ifdef OS_LINUX
+        if (this->fastIPC) {
+            while (__atomic_load_n(
+                       &this->gameState->FAST_RECEIVED_SEQUENCE,
+                       __ATOMIC_ACQUIRE) != this->fastCommandSequence) {
+                const uint32_t observed = __atomic_load_n(
+                    &this->gameState->FAST_RECEIVED_SEQUENCE,
+                    __ATOMIC_RELAXED);
+                waitForSequence(&this->gameState->FAST_RECEIVED_SEQUENCE, observed);
+            }
+
+            this->gameState->FAST_COMMAND_CODE = code;
+            this->gameState->FAST_COMMAND_VALUE = value;
+            std::memset(this->gameState->FAST_COMMAND, 0, sizeof(this->gameState->FAST_COMMAND));
+            if (command != nullptr) {
+                std::strncpy(
+                    this->gameState->FAST_COMMAND,
+                    command,
+                    sizeof(this->gameState->FAST_COMMAND) - 1);
+            }
+            ++this->fastCommandSequence;
+            __atomic_store_n(
+                &this->gameState->FAST_COMMAND_SEQUENCE,
+                this->fastCommandSequence,
+                __ATOMIC_RELEASE);
+            wakeSequence(&this->gameState->FAST_COMMAND_SEQUENCE);
+            return;
+        }
+#endif
+        this->MQDoom->send(code, command, value);
+    }
+
+    Message DoomController::receiveFromDoom() {
+#ifdef OS_LINUX
+        if (this->fastIPC) {
+            while (__atomic_load_n(
+                       &this->gameState->FAST_DONE_SEQUENCE,
+                       __ATOMIC_ACQUIRE) != this->fastCommandSequence) {
+                const uint32_t observed = __atomic_load_n(
+                    &this->gameState->FAST_DONE_SEQUENCE,
+                    __ATOMIC_RELAXED);
+                waitForSequence(&this->gameState->FAST_DONE_SEQUENCE, observed);
+            }
+
+            Message msg = {};
+            msg.code = this->gameState->FAST_RESPONSE_CODE;
+            msg.value = this->gameState->FAST_RESPONSE_VALUE;
+            std::strncpy(
+                msg.command,
+                this->gameState->FAST_RESPONSE,
+                sizeof(msg.command) - 1);
+            return msg;
+        }
+#endif
+        return this->MQController->receive();
+    }
+
     bool DoomController::receiveMQMsg() {
         bool done = false;
 
-        Message msg = this->MQController->receive();
+        Message msg = this->receiveFromDoom();
         switch (msg.code) {
             case MSG_CODE_DOOM_DONE :
                 done = true;
                 break;
 
             case MSG_CODE_DOOM_BATCH_DONE :
-                this->lastBatchTicsMade =
-                    b::lexical_cast<unsigned int>(std::string(msg.command));
+                this->lastBatchTicsMade = msg.value;
                 done = true;
                 break;
 
@@ -1320,7 +1437,7 @@ namespace vizdoom {
 
     void DoomController::waitForDoomMapStartTime() {
         while (this->gameState->MAP_TIC < this->mapStartTime) {
-            this->MQDoom->send(MSG_CODE_TIC);
+            this->sendToDoom(MSG_CODE_TIC);
             this->waitForDoomWork();
         }
     }

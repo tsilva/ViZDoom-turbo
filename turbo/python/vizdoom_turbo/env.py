@@ -484,6 +484,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             None if self.obs_copy == "copy" else 1 if self.obs_copy == "unsafe_view" else 2
         )
         self.obs_crop = _normalize_crop(obs_crop)
+        resolved_resize = _normalize_pair(obs_resize, "obs_resize")
         self.obs_crop_mode = str(obs_crop_mode).casefold()
         if self.obs_crop_mode not in {"remove", "mask"}:
             raise ValueError("obs_crop_mode must be 'remove' or 'mask'")
@@ -550,6 +551,47 @@ class VizdoomTurboVecEnv(VectorEnv):
         self._requested_game_variables = tuple(game_variables or ())
         self._assets, self._default_state_index = _resolve_state_catalog(state, state_catalog)
         self.state_catalog = tuple(asset.label for asset in self._assets)
+        exact_info_filter = (
+            isinstance(info_filter, Mapping)
+            and str(info_filter.get("mode", "")).casefold() == "all"
+            and tuple(str(key).casefold() for key in info_filter.get("keys", ()))
+            == ("killcount",)
+        )
+        self._optimized_profile = (
+            self.num_envs == 32
+            and self.num_threads == 32
+            and self._scenario.config_path.resolve()
+            == (Path(vzd.scenarios_path) / "basic.cfg").resolve()
+            and self._doom_map is None
+            and self._doom_skill is None
+            and self._game_args is None
+            and self._rom_path is None
+            and not self._vizdoom_config
+            and len(self._assets) == 1
+            and self._assets[0].label == _DEFAULT_STATE
+            and self._assets[0].payload is None
+            and str(use_restricted_actions).casefold() == "discrete"
+            and self.obs_copy == "safe_view"
+            and resolved_resize == (84, 84)
+            and self.obs_grayscale
+            and self.obs_layout == "chw"
+            and self.frame_stack == 4
+            and self.frame_skip == 4
+            and not self.maxpool_last_two
+            and self.sticky_action_prob == 0.0
+            and self.obs_resize_algorithm == "area"
+            and self.obs_crop == (0, 0, 0, 0)
+            and self.obs_crop_mode == "remove"
+            and self.noop_reset_max == 0
+            and self.reward_clip is None
+            and exact_info_filter
+            and tuple(
+                str(variable).strip().casefold()
+                for variable in self._requested_game_variables
+            )
+            == ("killcount",)
+            and self.treat_episode_timeout_as_truncation
+        )
         self._native_stepper_type = getattr(vzd, "_TurboBatchStepper", None)
         native_stepper_available = self._native_stepper_type is not None and all(
             hasattr(self._native_stepper_type, name)
@@ -615,7 +657,6 @@ class VizdoomTurboVecEnv(VectorEnv):
             if self.obs_crop_mode == "mask"
             else self.raw_width - self.obs_crop[2] - self.obs_crop[3]
         )
-        resolved_resize = _normalize_pair(obs_resize, "obs_resize")
         self.obs_height, self.obs_width = resolved_resize or (source_h, source_w)
         channels = 1 if self.obs_grayscale else 3
         stacked_channels = channels * self.frame_stack
@@ -651,6 +692,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             self.frame_stack,
             self.obs_layout,
             self.num_threads,
+            self._optimized_profile,
         )
         raw_shape = (self.raw_height, self.raw_width, 3)
         self._raw_frame_batch = np.zeros((self.num_envs, *raw_shape), dtype=np.uint8)
@@ -878,6 +920,8 @@ class VizdoomTurboVecEnv(VectorEnv):
             game.set_doom_map(self._doom_map)
         if self._doom_skill is not None:
             game.set_doom_skill(self._doom_skill)
+        if self._optimized_profile:
+            game.add_game_args("+viz_turbo_profile 1")
         if self._game_args:
             game.add_game_args(self._game_args)
         if self._vizdoom_config:
@@ -1248,7 +1292,8 @@ class VizdoomTurboVecEnv(VectorEnv):
                 enemy_variant_indices[lane] = snapshot.origin.enemy_variant_indices
                 surface_variant_indices[lane] = snapshot.origin.surface_variant_indices
         native_static_reset = (
-            self._native_stepper is not None
+            self._optimized_profile
+            and self._native_stepper is not None
             and self._native_reset_api is not None
             and not np.any(snapshot_mask)
             and not np.any(noop_counts[static_mask])

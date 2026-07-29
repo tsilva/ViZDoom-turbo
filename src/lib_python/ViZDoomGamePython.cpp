@@ -389,7 +389,8 @@ namespace vizdoom {
         if (gameVariablesSize != this->availableGameVariables.size())
             throw std::invalid_argument("game variable width does not match available variables");
         DoomGame::setSeed(seed);
-        DoomGame::newEpisode();
+        this->doomController->restartMapBatched();
+        this->resetState();
         for (size_t index = 0; index < gameVariablesSize; ++index) {
             gameVariables[index] =
                 this->doomController->getGameVariable(this->availableGameVariables[index]);

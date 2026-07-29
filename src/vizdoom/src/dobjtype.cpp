@@ -62,15 +62,11 @@ void PClass::StaticInit ()
 	atterm (StaticShutdown);
 
 	// Sort classes by name to remove dependance on how the compiler ordered them.
-	REGINFO *head = &CRegHead;
-	REGINFO *tail = &CRegTail;
-
-	// MinGW's linker is linking the object files backwards for me now...
-	if (head > tail)
-	{
-		swapvalues (head, tail);
-	}
-	qsort (head + 1, tail - head - 1, sizeof(REGINFO), cregcmp);
+	REGINFO *head = VIZ_AutoSegStart(CRegHead, CRegTail); //VIZDOOM_CODE
+	REGINFO *tail = VIZ_AutoSegStop(CRegHead, CRegTail); //VIZDOOM_CODE
+	while (head < tail && *head == NULL) ++head; //VIZDOOM_CODE
+	while (tail > head && tail[-1] == NULL) --tail; //VIZDOOM_CODE
+	qsort (head, tail - head, sizeof(REGINFO), cregcmp); //VIZDOOM_CODE
 
 	FAutoSegIterator probe(CRegHead, CRegTail);
 

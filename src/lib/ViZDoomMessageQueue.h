@@ -41,6 +41,7 @@ namespace vizdoom {
     /* Message struct */
     struct Message {
         uint8_t code;
+        uint32_t value;
         char command[MQ_MAX_CMD_LEN];
     };
 
@@ -53,7 +54,7 @@ namespace vizdoom {
         void init();
         void close();
 
-        void send(uint8_t code, const char *command = nullptr);
+        void send(uint8_t code, const char *command = nullptr, uint32_t value = 0);
         Message receive();
 
     private:
