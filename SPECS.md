@@ -9,3 +9,4 @@ ViZDoom-turbo provides high-throughput ViZDoom environments for reinforcement-le
 - Maintain ViZDoom-turbo development on this repository’s `turbo` branch.
 - Preserve the branded project README and repository-owned build/release workflow.
 - Version ViZDoom-turbo releases as PEP 440 post releases whose base matches the pinned stable upstream ViZDoom version.
+- Publish binary distributions only for Apple-silicon macOS and x86-64 Linux.
