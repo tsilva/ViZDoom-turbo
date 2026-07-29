@@ -21,10 +21,10 @@ unused PyPI version, consistent Python and Rust metadata, locked dependencies,
 passing local checks, and a valid changelog. It commits the release metadata,
 tags `vizdoom-turbo-v<version>`, and atomically pushes the branch and tag.
 
-The tag workflow builds and audits CPython 3.11 stable-ABI wheels for macOS
-ARM64, macOS Intel, Linux x86-64, and Linux ARM64 plus a source distribution.
-It publishes with PyPI trusted publishing and creates a GitHub Release. Never
-print, commit, or pass PyPI credentials on a command line.
+The tag workflow builds and audits CPython 3.14 wheels for exactly
+`macos-arm64` and `linux-x86_64`, plus a source distribution. It publishes with
+PyPI trusted publishing and creates a GitHub Release. Never print, commit, or
+pass PyPI credentials on a command line.
 
 ## Flow
 
