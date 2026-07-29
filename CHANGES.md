@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Nothing yet.
+
+## 1.3.0.post15 - 2026-07-29
+
 - Add `VizdoomDefendLine-Plus-v1` with seeded per-lane enemy and surface
   appearance variants, provenance-tracked reusable assets, and unchanged
   gameplay contracts.
