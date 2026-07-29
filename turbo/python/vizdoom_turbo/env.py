@@ -19,14 +19,12 @@ from typing import Any, Literal
 
 import gymnasium as gym
 import numpy as np
+import vizdoom as vzd
 from gymnasium.vector import AutoresetMode, VectorEnv
 from gymnasium.vector.utils import batch_space
 
-import vizdoom as vzd
-
 from ._vizdoom_turbo import ActionHistory, ImageProcessor
 from .action_tables import ActionTable, resolve_custom_action
-
 
 _DEFAULT_STATE = "default"
 _BUILTIN_SCENARIOS = {

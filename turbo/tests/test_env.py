@@ -7,11 +7,9 @@ from pathlib import Path
 import gymnasium as gym
 import numpy as np
 import pytest
+import vizdoom as vzd
 from gymnasium.vector import AutoresetMode
 from vizdoom_turbo import VizDoomTurboVecEnv, VizdoomTurboVecEnv, scenario_buttons
-
-import vizdoom as vzd
-
 
 SUPPORTED_SCENARIOS = (
     "basic",
