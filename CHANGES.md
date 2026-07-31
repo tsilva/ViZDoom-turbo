@@ -4,6 +4,10 @@
 
 - Nothing yet.
 
+## 1.3.0.post20 - 2026-07-31
+
+- Support single-tic native batch steps.
+
 ## 1.3.0.post19 - 2026-07-31
 
 - Optimize RLab environment throughput.
