@@ -15,7 +15,7 @@ def build_wheel(
     config_settings: Mapping[str, Any] | None = None,
     metadata_directory: str | None = None,
 ) -> str:
-    with staged_vizdoom_core():
+    with staged_vizdoom_core(profile_guided=True):
         return maturin.build_wheel(
             wheel_directory,
             config_settings,

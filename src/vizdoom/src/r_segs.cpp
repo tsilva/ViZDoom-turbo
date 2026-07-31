@@ -67,6 +67,8 @@ CVAR(Bool, r_np2, true, 0)
 #define HEIGHTSHIFT (FRACBITS-HEIGHTBITS)
 
 extern fixed_t globaluclip, globaldclip;
+extern bool vizTurboBackgroundCacheHit; //VIZDOOM_CODE
+extern void VIZ_TurboMarkMaskedRect (int x1, int y1, int x2, int y2); //VIZDOOM_CODE
 
 
 // OPTIMIZE: closed two sided lines as single sided
@@ -224,6 +226,7 @@ void R_RenderFakeWallRange(drawseg_t *ds, int x1, int x2);
 //VIZDOOM_CODE
 void R_RenderMaskedSegRange (drawseg_t *ds, int x1, int x2)
 {
+	VIZ_TurboMarkMaskedRect(x1, 0, x2, viewheight); //VIZDOOM_CODE
 	FTexture	*tex;
 	int			i;
 	sector_t	tempsec;		// killough 4/13/98
@@ -1111,6 +1114,7 @@ inline fixed_t prevline1 (fixed_t vince, BYTE *colormap, int count, fixed_t vplc
 void wallscan (int x1, int x2, short *uwal, short *dwal, fixed_t *swal, fixed_t *lwal,
 			   fixed_t yrepeat, const BYTE *(*getcol)(FTexture *tex, int x))
 {
+	if (vizTurboBackgroundCacheHit) return; //VIZDOOM_CODE
 	int x, shiftval;
 	int y1ve[4], y2ve[4], u4, d4, z;
 	char bad;
@@ -3241,6 +3245,8 @@ static void R_RenderDecal (side_t *wall, DBaseDecal *decal, drawseg_t *clipper, 
 
 	if (x1 >= clipper->x2 || x2 <= clipper->x1)
 		goto done;
+	VIZ_TurboMarkMaskedRect(
+		MAX<int>(x1, clipper->x1), 0, MIN<int>(x2, clipper->x2), viewheight); //VIZDOOM_CODE
 
 	WallT.InitFromWallCoords(&WallC);
 

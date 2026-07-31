@@ -59,15 +59,17 @@ namespace vizdoom {
         void startLaneNative(size_t lane);
         void finishLaneNative(size_t lane);
         void resetLaneNative(size_t lane, unsigned int seed);
-        static unsigned int nativeStepLane(void *context, size_t lane) noexcept;
-        static unsigned int nativeStartLane(void *context, size_t lane) noexcept;
-        static unsigned int nativeFinishLane(void *context, size_t lane) noexcept;
+        static uint64_t nativeStepLane(void *context, size_t lane) noexcept;
+        static uint64_t nativeStartLane(void *context, size_t lane) noexcept;
+        static uint64_t nativeStartAll(void *context) noexcept;
+        static uint64_t nativeFinishLane(void *context, size_t lane) noexcept;
         static unsigned int nativeResetLane(
             void *context,
             size_t lane,
             unsigned int seed) noexcept;
         static const uint8_t *nativeFrame(void *context, size_t lane) noexcept;
         static const uint8_t *nativePalette(void *context, size_t lane) noexcept;
+        static const uint64_t *nativeBackgroundData(void *context, size_t lane) noexcept;
 
         pyb::list gameOwners;
         std::vector<DoomGamePython *> games;

@@ -359,13 +359,14 @@ namespace vizdoom {
     void DoomController::startTicsBatched(
         unsigned int tics,
         bool update,
-        const std::string *fixedCount) {
+        const std::string *fixedCount,
+        bool ticPossibleChecked) {
 
         if (!this->doomRunning) throw ViZDoomIsNotRunningException();
         if (tics <= 1) {
             throw std::invalid_argument("batched tics requires at least two tics");
         }
-        if (!this->isTicPossible()) {
+		if (!ticPossibleChecked && !this->isTicPossible()) {
             this->batchInFlight = false;
             return;
         }
@@ -440,19 +441,19 @@ namespace vizdoom {
             return;
         }
 
-        this->forceDoomSeed(this->getNextDoomSeed());
-        this->sendCommand(std::string("map ") + this->map);
+        this->doomStaticSeed = true;
+        this->doomSeed = this->getNextDoomSeed();
+        const std::string resetCommand =
+            b::lexical_cast<std::string>(this->doomSeed) + ";" + this->map;
         ++this->mapRestartCount;
         this->mapChanging = true;
         this->resetButtons();
-        this->sendCommand("viz_override_player 0");
-        this->sendToDoom(MSG_CODE_TURBO_RESET, nullptr, this->mapStartTime);
+
+        this->sendToDoom(MSG_CODE_TURBO_RESET, resetCommand.c_str(), this->mapStartTime);
         this->waitForDoomWork();
         this->mapLastTic = this->gameState->MAP_TIC;
         this->mapChanging = false;
     }
-
-
 
     void DoomController::restartMap(std::string demoPath) {
         this->setMap(this->map, demoPath);
@@ -978,6 +979,19 @@ namespace vizdoom {
     uint32_t DoomController::getScreenUpdateSequence() const {
         if (this->doomRunning) return this->gameState->SCREEN_UPDATE_SEQUENCE;
         else throw ViZDoomIsNotRunningException();
+    }
+
+    //VIZDOOM_CODE
+    const uint64_t *DoomController::getTurboBackgroundData() const {
+        if (this->doomRunning) return &this->gameState->TURBO_BACKGROUND_TOKEN;
+        else throw ViZDoomIsNotRunningException();
+    }
+
+    //VIZDOOM_CODE
+    uint64_t DoomController::getTurboBackgroundState() const {
+        if (!this->doomRunning) throw ViZDoomIsNotRunningException();
+        return ((uint64_t)(this->gameState->TURBO_BACKGROUND_SLOT & 255) << 36) |
+            ((uint64_t)(this->gameState->TURBO_BACKGROUND_HIT ? 1 : 0) << 44);
     }
 
     size_t DoomController::getScreenSize() {

@@ -888,6 +888,12 @@ class VizdoomTurboVecEnv(VectorEnv):
             native_api = self._native_stepper.native_api()
             self._native_api = native_api[:5]
             self._native_reset_api = native_api[5] if len(native_api) >= 6 else None
+            self._native_background_api = (
+                native_api[6]
+                if len(native_api) >= 7
+                and os.environ.get("VIZDOOM_TURBO_DISABLE_BACKGROUND_PROVENANCE") != "1"
+                else None
+            )
             self._native_stack_lanes = tuple(self._stack[lane] for lane in range(self.num_envs))
             self._native_head_lanes = tuple(
                 self._stack_heads[lane : lane + 1] for lane in range(self.num_envs)
@@ -1010,6 +1016,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             raise ValueError(f"unknown info keys: {sorted(unknown_signals)}")
         self._info_mode = mode
         self._info_keys = tuple(selected)
+        self._info_indices = tuple(self._signal_names.index(key) for key in self._info_keys)
         self._collect_game_variables = mode != "none" and any(
             key in self.game_variable_names for key in self._info_keys
         )
@@ -1082,8 +1089,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         if self._info_mode == "terminal":
             present = present & self._pending_reset
         result: dict[str, np.ndarray] = {}
-        for key in self._info_keys:
-            index = self._signal_names.index(key)
+        for key, index in zip(self._info_keys, self._info_indices, strict=True):
             result[key] = self._signals[:, index].copy()
             result[f"_{key}"] = present.copy()
         return result
@@ -1471,6 +1477,11 @@ class VizdoomTurboVecEnv(VectorEnv):
             values = np.asarray(actions, dtype=np.int64).reshape(-1)
             if values.shape != (self.num_envs,):
                 raise ValueError(f"actions must have shape ({self.num_envs},)")
+            if out is not None and values.flags.c_contiguous:
+                self._image_processor.prepare_discrete_actions_into(
+                    values, self._custom_actions, out
+                )
+                return out
             if values.size and int(values.min()) < 0:
                 raise ValueError(f"actions must be in [0, {len(self._custom_actions) - 1}]")
             if out is not None:
@@ -1585,6 +1596,7 @@ class VizdoomTurboVecEnv(VectorEnv):
                 self._stack,
                 self._stack_heads,
                 observations,
+                self._native_background_api,
             )
             rewards[...] = self._native_rewards
             terminated[...] = self._native_terminated

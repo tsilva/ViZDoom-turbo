@@ -76,6 +76,7 @@ EXTERN_CVAR (Bool, viz_async)
 EXTERN_CVAR (Bool, viz_allow_input)
 EXTERN_CVAR (Int, viz_sync_timeout)
 EXTERN_CVAR (Bool, viz_nosound)
+EXTERN_CVAR (Bool, viz_turbo_profile) //VIZDOOM_CODE
 
 EXTERN_CVAR (Int, disableautosave)
 EXTERN_CVAR (Int, autosavecount)
@@ -959,6 +960,9 @@ int gametime;
 //VIZDOOM_CODE
 void NetUpdate (void)
 {
+	//VIZDOOM_CODE
+	if (*viz_turbo_profile && vizPendingTics > 0)
+		return;
 	//VIZDOOM_CODE
 	VIZ_InterruptionPoint();
 

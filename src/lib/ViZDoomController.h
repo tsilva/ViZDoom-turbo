@@ -112,7 +112,8 @@ namespace vizdoom {
         void startTicsBatched(
             unsigned int tics,
             bool update = true,
-            const std::string *fixedCount = nullptr);
+            const std::string *fixedCount = nullptr,
+            bool ticPossibleChecked = false);
         void finishTicsBatched();
         void ticsBatched(unsigned int tics, bool update = true);
         //VIZDOOM_CODE
@@ -204,6 +205,8 @@ namespace vizdoom {
         void setScreenHeight(unsigned int height);
         ScreenFormat getScreenFormat();
         uint32_t getScreenUpdateSequence() const;
+        const uint64_t *getTurboBackgroundData() const;
+        uint64_t getTurboBackgroundState() const;
 
         void setScreenFormat(ScreenFormat format);
         unsigned int getScreenChannels();

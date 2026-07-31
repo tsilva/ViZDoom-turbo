@@ -54,6 +54,8 @@ static TArray<side_t *> SpreadStack;
 
 static int ImpactCount;
 
+int VIZ_TurboImpactDecalCount () { return ImpactCount; } //VIZDOOM_CODE
+
 CVAR (Bool, cl_spreaddecals, true, CVAR_ARCHIVE)
 
 IMPLEMENT_POINTY_CLASS (DBaseDecal)

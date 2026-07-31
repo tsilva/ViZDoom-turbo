@@ -27,6 +27,8 @@
 
 #include <stdlib.h>
 #include <math.h>
+#include <string.h> //VIZDOOM_CODE
+#include <vector> //VIZDOOM_CODE
 
 #include "templates.h"
 #include "doomdef.h"
@@ -89,6 +91,7 @@ static void R_ShutdownRenderer();
 extern short *openings;
 extern bool r_fakingunderwater;
 extern "C" int fuzzviewheight;
+EXTERN_CVAR (Bool, viz_turbo_profile) //VIZDOOM_CODE
 
 
 // PRIVATE DATA DECLARATIONS -----------------------------------------------
@@ -162,6 +165,182 @@ void (*hcolfunc_post2) (int hx, int sx, int yl, int yh);
 void (STACK_ARGS *hcolfunc_post4) (int sx, int yl, int yh);
 
 cycle_t WallCycles, PlaneCycles, MaskedCycles, WallScanCycles;
+
+//VIZDOOM_CODE
+bool vizTurboBackgroundCacheHit;
+//VIZDOOM_CODE
+uint64_t vizTurboBackgroundToken;
+//VIZDOOM_CODE
+uint64_t vizTurboBackgroundDirtyTiles;
+//VIZDOOM_CODE
+uint64_t vizTurboBackgroundDirtyTilesHigh;
+//VIZDOOM_CODE
+unsigned int vizTurboBackgroundSlot;
+//VIZDOOM_CODE
+static uint64_t vizTurboNextBackgroundToken;
+
+//VIZDOOM_CODE
+void VIZ_TurboMarkMaskedRect (int x1, int y1, int x2, int y2)
+{
+	if (!vizTurboBackgroundCacheHit || x1 >= x2 || y1 >= y2)
+		return;
+	x1 = clamp(x1, 0, 320);
+	x2 = clamp(x2, 0, 320);
+	y1 = clamp(y1, 0, 240);
+	y2 = clamp(y2, 0, 240);
+	if (x1 >= x2 || y1 >= y2)
+		return;
+	const int outputX1 = x1 * 84 / 320;
+	const int outputX2 = (x2 * 84 + 319) / 320;
+	const int outputY1 = y1 * 84 / 240;
+	const int outputY2 = (y2 * 84 + 239) / 240;
+	const int tileX1 = outputX1 / 12;
+	const int tileX2 = (outputX2 - 1) / 12;
+	const int tileY1 = outputY1 / 12;
+	const int tileY2 = (outputY2 - 1) / 12;
+	for (int tileY = tileY1; tileY <= tileY2; ++tileY)
+	{
+		for (int tileX = tileX1; tileX <= tileX2; ++tileX)
+		{
+			const int tile = tileY * 7 + tileX;
+			if (tile < 64)
+				vizTurboBackgroundDirtyTiles |= (uint64_t)1 << tile;
+			else
+				vizTurboBackgroundDirtyTilesHigh |= (uint64_t)1 << (tile - 64);
+		}
+	}
+}
+
+//VIZDOOM_CODE
+struct VIZTurboBackgroundCacheEntry
+{
+	bool valid;
+	bool geometryValid;
+	fixed_t viewx;
+	fixed_t viewy;
+	fixed_t viewz;
+	angle_t viewangle;
+	int viewpitch;
+	int extralight;
+	int fixedlightlev;
+	const lighttable_t *fixedcolormap;
+	const FDynamicColormap *basecolormap;
+	uint64_t token;
+	BYTE pixels[320*240];
+	std::vector<drawseg_t> drawSegments;
+	std::vector<short> openingValues;
+	short floorClip[320];
+	short ceilingClip[320];
+	std::vector<size_t> interestingDrawSegments;
+	size_t firstInterestingDrawSegment;
+};
+
+//VIZDOOM_CODE
+static VIZTurboBackgroundCacheEntry vizTurboBackgroundCache[256];
+
+//VIZDOOM_CODE
+bool vizTurboBackgroundGeometryReplay;
+
+//VIZDOOM_CODE
+static VIZTurboBackgroundCacheEntry *VIZ_TurboBackgroundCacheLookup ()
+{
+	static const bool enabled =
+		(*viz_turbo_profile &&
+		 std::getenv("VIZDOOM_TURBO_DISABLE_BACKGROUND_CACHE") == NULL) ||
+		std::getenv("VIZDOOM_TURBO_BACKGROUND_CACHE") != NULL;
+	if (!enabled || !*viz_turbo_profile || viewwidth != 320 || viewheight != 240 ||
+		RenderTarget->GetPitch() != 320)
+	{
+		vizTurboBackgroundToken = 0;
+		vizTurboBackgroundDirtyTiles = ~(uint64_t)0;
+		vizTurboBackgroundDirtyTilesHigh = ((uint64_t)1 << 57) - 1;
+		vizTurboBackgroundSlot = 0;
+		return NULL;
+	}
+
+	size_t hash = (size_t)(unsigned int)viewx;
+	hash = hash * 0x9e3779b1u + (unsigned int)viewy;
+	hash = hash * 0x9e3779b1u + (unsigned int)viewz;
+	hash = hash * 0x9e3779b1u + (unsigned int)viewangle;
+	hash = hash * 0x9e3779b1u + (unsigned int)viewpitch;
+	hash = hash * 0x9e3779b1u + (unsigned int)extralight;
+	hash = hash * 0x9e3779b1u + (unsigned int)fixedlightlev;
+	VIZTurboBackgroundCacheEntry *entry =
+		&vizTurboBackgroundCache[hash & (countof(vizTurboBackgroundCache) - 1)];
+	vizTurboBackgroundSlot =
+		(unsigned int)(entry - vizTurboBackgroundCache);
+	vizTurboBackgroundCacheHit =
+		entry->valid &&
+		entry->viewx == viewx &&
+		entry->viewy == viewy &&
+		entry->viewz == viewz &&
+		entry->viewangle == viewangle &&
+		entry->viewpitch == viewpitch &&
+		entry->extralight == extralight &&
+		entry->fixedlightlev == fixedlightlev &&
+		entry->fixedcolormap == fixedcolormap &&
+		entry->basecolormap == basecolormap;
+	vizTurboBackgroundToken = vizTurboBackgroundCacheHit ? entry->token : 0;
+	vizTurboBackgroundDirtyTiles = vizTurboBackgroundCacheHit
+		? 0
+		: ~(uint64_t)0;
+	vizTurboBackgroundDirtyTilesHigh = vizTurboBackgroundCacheHit
+		? 0
+		: ((uint64_t)1 << 57) - 1;
+	if (!vizTurboBackgroundCacheHit)
+		entry->geometryValid = false;
+	return entry;
+}
+
+//VIZDOOM_CODE
+static bool VIZ_TurboBackgroundGeometryRestore (
+	VIZTurboBackgroundCacheEntry *entry)
+{
+	if (!vizTurboBackgroundCacheHit || entry == NULL || !entry->geometryValid)
+		return false;
+	if (!entry->drawSegments.empty())
+		memcpy(drawsegs, &entry->drawSegments[0],
+			entry->drawSegments.size() * sizeof(drawseg_t));
+	ds_p = drawsegs + entry->drawSegments.size();
+	if (!entry->openingValues.empty())
+		memcpy(openings, &entry->openingValues[0],
+			entry->openingValues.size() * sizeof(short));
+	lastopening = entry->openingValues.size();
+	memcpy(floorclip, entry->floorClip, sizeof(entry->floorClip));
+	memcpy(ceilingclip, entry->ceilingClip, sizeof(entry->ceilingClip));
+	InterestingDrawsegs.Clear();
+	for (size_t index = 0; index < entry->interestingDrawSegments.size(); ++index)
+		InterestingDrawsegs.Push(entry->interestingDrawSegments[index]);
+	FirstInterestingDrawseg = entry->firstInterestingDrawSegment;
+	return true;
+}
+
+//VIZDOOM_CODE
+static void VIZ_TurboBackgroundCacheStore (VIZTurboBackgroundCacheEntry *entry)
+{
+	entry->drawSegments.assign(drawsegs, ds_p);
+	entry->openingValues.assign(openings, openings + lastopening);
+	memcpy(entry->floorClip, floorclip, sizeof(entry->floorClip));
+	memcpy(entry->ceilingClip, ceilingclip, sizeof(entry->ceilingClip));
+	entry->interestingDrawSegments.clear();
+	for (size_t index = 0; index < InterestingDrawsegs.Size(); ++index)
+		entry->interestingDrawSegments.push_back(InterestingDrawsegs[index]);
+	entry->firstInterestingDrawSegment = FirstInterestingDrawseg;
+	entry->geometryValid = numnodes == 0 && numsubsectors == 1;
+	memcpy(entry->pixels, RenderTarget->GetBuffer(), sizeof(entry->pixels));
+	entry->viewx = viewx;
+	entry->viewy = viewy;
+	entry->viewz = viewz;
+	entry->viewangle = viewangle;
+	entry->viewpitch = viewpitch;
+	entry->extralight = extralight;
+	entry->fixedlightlev = fixedlightlev;
+	entry->fixedcolormap = fixedcolormap;
+	entry->basecolormap = basecolormap;
+	entry->token = ++vizTurboNextBackgroundToken;
+	vizTurboBackgroundToken = entry->token;
+	entry->valid = true;
+}
 
 // PRIVATE DATA DEFINITIONS ------------------------------------------------
 
@@ -750,6 +929,15 @@ void R_RenderActorView (AActor *actor, bool dontmaplines)
 
 	R_SetupBuffer ();
 	R_SetupFrame (actor);
+	vizTurboBackgroundCacheHit = false; //VIZDOOM_CODE
+	VIZTurboBackgroundCacheEntry *vizTurboBackground =
+		VIZ_TurboBackgroundCacheLookup(); //VIZDOOM_CODE
+	//VIZDOOM_CODE
+	if (vizTurboBackgroundCacheHit)
+	{
+		memcpy(RenderTarget->GetBuffer(), vizTurboBackground->pixels,
+			sizeof(vizTurboBackground->pixels));
+	}
 
 	// Clear buffers.
 	R_ClearClipSegs (0, viewwidth);
@@ -800,7 +988,12 @@ void R_RenderActorView (AActor *actor, bool dontmaplines)
 	}
 	// Link the polyobjects right before drawing the scene to reduce the amounts of calls to this function
 	PO_LinkToSubsectors();
+	vizTurboBackgroundGeometryReplay =
+		vizTurboBackgroundCacheHit && vizTurboBackground != NULL &&
+		vizTurboBackground->geometryValid && numnodes == 0 && numsubsectors == 1; //VIZDOOM_CODE
 	R_RenderBSPNode (nodes + numnodes - 1);	// The head node is the last node output.
+	vizTurboBackgroundGeometryReplay = false; //VIZDOOM_CODE
+	VIZ_TurboBackgroundGeometryRestore(vizTurboBackground); //VIZDOOM_CODE
 	R_3D_ResetClip(); // reset clips (floor/ceiling)
 	camera->renderflags = savedflags;
 	WallCycles.Unclock();
@@ -809,10 +1002,23 @@ void R_RenderActorView (AActor *actor, bool dontmaplines)
 
 	if (viewactive)
 	{
+		extern int VIZ_TurboImpactDecalCount (); //VIZDOOM_CODE
 		PlaneCycles.Clock();
-		R_DrawPlanes ();
-		R_DrawSkyBoxes ();
+		//VIZDOOM_CODE
+		if (!vizTurboBackgroundCacheHit)
+		{
+			R_DrawPlanes ();
+			R_DrawSkyBoxes ();
+		}
 		PlaneCycles.Unclock();
+		//VIZDOOM_CODE
+		if (!vizTurboBackgroundCacheHit &&
+			vizTurboBackground != NULL &&
+			WallMirrors.Size() == 0 &&
+			VIZ_TurboImpactDecalCount() == 0)
+		{
+			VIZ_TurboBackgroundCacheStore(vizTurboBackground);
+		}
 
 		// [RH] Walk through mirrors
 		size_t lastmirror = WallMirrors.Size ();

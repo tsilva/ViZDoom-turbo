@@ -177,7 +177,7 @@ namespace vizdoom {
         this->truncatedData[lane] = false;
     }
 
-    unsigned int TurboBatchStepper::nativeStepLane(void *context, size_t lane) noexcept {
+    uint64_t TurboBatchStepper::nativeStepLane(void *context, size_t lane) noexcept {
         try {
             TurboBatchStepper *stepper = static_cast<TurboBatchStepper *>(context);
             if (lane >= stepper->games.size()) return 4;
@@ -190,7 +190,7 @@ namespace vizdoom {
         }
     }
 
-    unsigned int TurboBatchStepper::nativeStartLane(void *context, size_t lane) noexcept {
+    uint64_t TurboBatchStepper::nativeStartLane(void *context, size_t lane) noexcept {
         try {
             TurboBatchStepper *stepper = static_cast<TurboBatchStepper *>(context);
             if (lane >= stepper->games.size()) return 4;
@@ -202,7 +202,19 @@ namespace vizdoom {
         }
     }
 
-    unsigned int TurboBatchStepper::nativeFinishLane(void *context, size_t lane) noexcept {
+    uint64_t TurboBatchStepper::nativeStartAll(void *context) noexcept {
+        try {
+            TurboBatchStepper *stepper = static_cast<TurboBatchStepper *>(context);
+            for (size_t lane = 0; lane < stepper->games.size(); ++lane)
+                stepper->startLaneNative(lane);
+            return 0;
+        }
+        catch (...) {
+            return 4;
+        }
+    }
+
+    uint64_t TurboBatchStepper::nativeFinishLane(void *context, size_t lane) noexcept {
         try {
             TurboBatchStepper *stepper = static_cast<TurboBatchStepper *>(context);
             if (lane >= stepper->games.size()) return 4;
@@ -212,9 +224,12 @@ namespace vizdoom {
             const bool screenUnchanged =
                 screenUpdateSequence == stepper->screenUpdateSequences[lane];
             stepper->screenUpdateSequences[lane] = screenUpdateSequence;
+            const uint64_t backgroundState =
+                stepper->games[lane]->doomController->getTurboBackgroundState();
             return (stepper->terminatedData[lane] ? 1u : 0u) |
                 (stepper->truncatedData[lane] ? 2u : 0u) |
-                (screenUnchanged ? 8u : 0u);
+                (screenUnchanged ? 8u : 0u) |
+                (backgroundState << 8);
         }
         catch (...) {
             return 4;
@@ -254,6 +269,13 @@ namespace vizdoom {
         return stepper->games[lane]->doomController->getScreenPalette();
     }
 
+    const uint64_t *TurboBatchStepper::nativeBackgroundData(
+        void *context, size_t lane) noexcept {
+        TurboBatchStepper *stepper = static_cast<TurboBatchStepper *>(context);
+        if (lane >= stepper->games.size()) return NULL;
+        return stepper->games[lane]->doomController->getTurboBackgroundData();
+    }
+
     void TurboBatchStepper::readLaneInto(size_t lane) {
         if (lane >= this->games.size()) throw std::out_of_range("lane is out of range");
     }
@@ -285,10 +307,11 @@ namespace vizdoom {
     pyb::tuple TurboBatchStepper::nativeApi() {
         return pyb::make_tuple(
             reinterpret_cast<uintptr_t>(this),
-            reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeStartLane),
+            reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeStartAll),
             reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeFinishLane),
             reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeFrame),
             reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativePalette),
-            reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeResetLane));
+            reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeResetLane),
+            reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeBackgroundData));
     }
 }

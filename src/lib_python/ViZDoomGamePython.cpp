@@ -38,6 +38,7 @@ namespace vizdoom {
         this->audioShape.resize(2);
         this->variablesShape.resize(1);
         this->turboTics = 0;
+        this->turboActionInitialized = false;
     }
 
     void DoomGamePython::setAction(pyb::object const &pyAction) {
@@ -280,11 +281,15 @@ namespace vizdoom {
             throw std::invalid_argument("action width does not match available buttons");
 
         for (size_t index = 0; index < actionSize; ++index) {
-            this->nextAction[index] = action[index];
-            this->doomController->setButtonState(
-                this->availableButtons[index],
-                this->nextAction[index]);
+			if (!this->turboActionInitialized ||
+				this->nextAction[index] != action[index]) {
+				this->nextAction[index] = action[index];
+				this->doomController->setButtonState(
+					this->availableButtons[index],
+					this->nextAction[index]);
+			}
         }
+		this->turboActionInitialized = true;
 
         this->turboTotalBefore = this->summaryReward;
         this->turboStepAdvanced = this->doomController->isTicPossible();
@@ -293,7 +298,8 @@ namespace vizdoom {
                 this->turboTics = tics;
                 this->turboTicsCount = std::to_string(tics);
             }
-            this->doomController->startTicsBatched(tics, true, &this->turboTicsCount);
+			this->doomController->startTicsBatched(
+				tics, true, &this->turboTicsCount, true);
         }
     }
 
@@ -327,7 +333,7 @@ namespace vizdoom {
                 }
             }
             else {
-                this->lastAction = this->nextAction;
+				this->lastAction = this->nextAction;
             }
             this->updateReward();
             if (this->doomController->isRunDoomAsync())
@@ -390,6 +396,7 @@ namespace vizdoom {
             throw std::invalid_argument("game variable width does not match available variables");
         DoomGame::setSeed(seed);
         this->doomController->restartMapBatched();
+        this->turboActionInitialized = false;
         this->resetState();
         for (size_t index = 0; index < gameVariablesSize; ++index) {
             gameVariables[index] =

@@ -30,6 +30,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <algorithm>
+#include <string.h> //VIZDOOM_CODE
+#include <vector> //VIZDOOM_CODE
 
 #include "templates.h"
 #include "doomdef.h"
@@ -68,6 +70,7 @@
 #include "viz_labels.h"
 
 EXTERN_CVAR (Bool, viz_render_corpses)
+EXTERN_CVAR (Bool, viz_turbo_profile) //VIZDOOM_CODE
 
 // [RH] A c-buffer. Used for keeping track of offscreen voxel spans.
 
@@ -93,7 +96,7 @@ struct FCoverageBuffer
 };
 
 extern fixed_t globaluclip, globaldclip;
-
+extern void VIZ_TurboMarkMaskedRect (int x1, int y1, int x2, int y2); //VIZDOOM_CODE
 
 #define MINZ			(2048*4)
 #define BASEYCENTER 	(100)
@@ -244,6 +247,341 @@ fixed_t 		sprtopscreen;
 
 bool			sprflipvert;
 
+//VIZDOOM_CODE
+struct VIZTurboSpriteEffectSpan
+{
+	unsigned short x;
+	unsigned short y1;
+	unsigned short y2;
+	unsigned int values;
+};
+
+//VIZDOOM_CODE
+struct VIZTurboSpriteEffectRow
+{
+	unsigned short y;
+	unsigned short x1;
+	unsigned short x2;
+	unsigned int values;
+};
+
+//VIZDOOM_CODE
+struct VIZTurboSpriteEffectEntry
+{
+	bool valid;
+	uint64_t fingerprint;
+	vissprite_t sprite;
+	int centeryfrac;
+	int x1;
+	int x2;
+	bool marked;
+	int markY1;
+	int markY2;
+	std::vector<short> floorclip;
+	std::vector<short> ceilingclip;
+	std::vector<VIZTurboSpriteEffectSpan> spans;
+	std::vector<BYTE> values;
+	std::vector<VIZTurboSpriteEffectRow> rows;
+	std::vector<BYTE> rowValues;
+	std::vector<BYTE> scratchMask;
+	std::vector<BYTE> scratchValues;
+};
+
+//VIZDOOM_CODE
+static VIZTurboSpriteEffectEntry *vizTurboSpriteEffects =
+	new VIZTurboSpriteEffectEntry[128];
+//VIZDOOM_CODE
+static VIZTurboSpriteEffectEntry *vizTurboSpriteCapture;
+//VIZDOOM_CODE
+extern bool vizTurboBackgroundCacheHit; //VIZDOOM_CODE
+extern uint64_t vizTurboBackgroundToken; //VIZDOOM_CODE
+extern uint64_t vizTurboBackgroundDirtyTiles; //VIZDOOM_CODE
+extern int VIZ_TurboImpactDecalCount (); //VIZDOOM_CODE
+
+//VIZDOOM_CODE
+struct VIZTurboSpriteClipEntry
+{
+	bool valid;
+	uint64_t fingerprint;
+	uint64_t backgroundToken;
+	vissprite_t sprite;
+	short topclip;
+	short botclip;
+	int x1;
+	int x2;
+	std::vector<short> floorclip;
+	std::vector<short> ceilingclip;
+};
+
+//VIZDOOM_CODE
+static VIZTurboSpriteClipEntry *vizTurboSpriteClips =
+	new VIZTurboSpriteClipEntry[64];
+
+//VIZDOOM_CODE
+static uint64_t VIZ_TurboSpriteClipFingerprint (
+	const vissprite_t *sprite, short topclip, short botclip)
+{
+	uint64_t hash = vizTurboBackgroundToken ^
+		((uint64_t)(unsigned short)topclip << 32) ^ (unsigned short)botclip;
+	const BYTE *bytes = (const BYTE *)sprite;
+	for (size_t index = 0; index < sizeof(*sprite); ++index)
+		hash = (hash ^ bytes[index]) * 0x100000001b3ULL;
+	return hash;
+}
+
+//VIZDOOM_CODE
+static bool VIZ_TurboSpriteClipLookup (
+	vissprite_t *sprite, short topclip, short botclip,
+	short *floorclip, short *ceilingclip, int x1, int x2)
+{
+	if (getenv("VIZDOOM_TURBO_DISABLE_SPRITE_CACHE") != NULL ||
+		!*viz_turbo_profile || !vizTurboBackgroundCacheHit ||
+		VIZ_TurboImpactDecalCount() != 0)
+		return false;
+	const uint64_t fingerprint =
+		VIZ_TurboSpriteClipFingerprint(sprite, topclip, botclip);
+	VIZTurboSpriteClipEntry &entry = vizTurboSpriteClips[fingerprint & 63];
+	if (!entry.valid || entry.fingerprint != fingerprint ||
+		entry.backgroundToken != vizTurboBackgroundToken ||
+		entry.topclip != topclip || entry.botclip != botclip ||
+		entry.x1 != x1 || entry.x2 != x2 ||
+		memcmp(&entry.sprite, sprite, sizeof(*sprite)) != 0)
+		return false;
+	memcpy(floorclip + x1, &entry.floorclip[0], (x2 - x1) * sizeof(short));
+	memcpy(ceilingclip + x1, &entry.ceilingclip[0], (x2 - x1) * sizeof(short));
+	return true;
+}
+
+//VIZDOOM_CODE
+static void VIZ_TurboSpriteClipStore (
+	vissprite_t *sprite, short topclip, short botclip,
+	short *floorclip, short *ceilingclip, int x1, int x2)
+{
+	if (getenv("VIZDOOM_TURBO_DISABLE_SPRITE_CACHE") != NULL ||
+		!*viz_turbo_profile || !vizTurboBackgroundCacheHit ||
+		VIZ_TurboImpactDecalCount() != 0)
+		return;
+	const uint64_t fingerprint =
+		VIZ_TurboSpriteClipFingerprint(sprite, topclip, botclip);
+	VIZTurboSpriteClipEntry &entry = vizTurboSpriteClips[fingerprint & 63];
+	entry.valid = false;
+	entry.fingerprint = fingerprint;
+	entry.backgroundToken = vizTurboBackgroundToken;
+	entry.sprite = *sprite;
+	entry.topclip = topclip;
+	entry.botclip = botclip;
+	entry.x1 = x1;
+	entry.x2 = x2;
+	entry.floorclip.assign(floorclip + x1, floorclip + x2);
+	entry.ceilingclip.assign(ceilingclip + x1, ceilingclip + x2);
+	entry.valid = true;
+}
+
+//VIZDOOM_CODE
+static uint64_t VIZ_TurboSpriteFingerprint (
+	const vissprite_t *vis, int x1, int x2)
+{
+	uint64_t hash = 0xcbf29ce484222325ULL;
+	const BYTE *bytes = (const BYTE *)vis;
+	for (size_t index = 0; index < sizeof(*vis); ++index)
+		hash = (hash ^ bytes[index]) * 0x100000001b3ULL;
+	for (int x = x1; x < x2; ++x)
+	{
+		hash = (hash ^ (unsigned short)mfloorclip[x]) * 0x100000001b3ULL;
+		hash = (hash ^ (unsigned short)mceilingclip[x]) * 0x100000001b3ULL;
+	}
+	return (hash ^ (unsigned int)centeryfrac) * 0x100000001b3ULL;
+}
+
+//VIZDOOM_CODE
+static bool VIZ_TurboSpriteEffectLookup (vissprite_t *vis)
+{
+	if (getenv("VIZDOOM_TURBO_DISABLE_SPRITE_CACHE") != NULL ||
+		!*viz_turbo_profile || vizDepthMap != NULL || vizLabels != NULL ||
+		viewwidth != 320 || viewheight != 240 ||
+		RenderTarget->GetPitch() != 320 ||
+		!(vis->Style.RenderStyle == LegacyRenderStyles[STYLE_Normal]))
+		return false;
+	const int x1 = clamp<int>(vis->x1, 0, 320);
+	const int x2 = clamp<int>(vis->x2, 0, 320);
+	if (x1 >= x2)
+		return false;
+	const uint64_t fingerprint = VIZ_TurboSpriteFingerprint(vis, x1, x2);
+	VIZTurboSpriteEffectEntry &entry =
+		vizTurboSpriteEffects[fingerprint & 127];
+	if (!entry.valid || entry.fingerprint != fingerprint ||
+		entry.centeryfrac != centeryfrac || entry.x1 != x1 || entry.x2 != x2 ||
+		memcmp(&entry.sprite, vis, sizeof(*vis)) != 0 ||
+		memcmp(&entry.floorclip[0], mfloorclip + x1,
+			(x2 - x1) * sizeof(short)) != 0 ||
+		memcmp(&entry.ceilingclip[0], mceilingclip + x1,
+			(x2 - x1) * sizeof(short)) != 0)
+		return false;
+	BYTE *buffer = RenderTarget->GetBuffer();
+	for (size_t index = 0; index < entry.rows.size(); ++index)
+	{
+		const VIZTurboSpriteEffectRow &row = entry.rows[index];
+		memcpy(buffer + row.y * 320 + row.x1,
+			&entry.rowValues[row.values], row.x2 - row.x1);
+	}
+	if (entry.marked)
+		VIZ_TurboMarkMaskedRect(x1, entry.markY1, x2, entry.markY2);
+	return true;
+}
+
+//VIZDOOM_CODE
+static VIZTurboSpriteEffectEntry *VIZ_TurboSpriteEffectPrepare (vissprite_t *vis)
+{
+	if (getenv("VIZDOOM_TURBO_DISABLE_SPRITE_CACHE") != NULL ||
+		!*viz_turbo_profile || vizDepthMap != NULL || vizLabels != NULL ||
+		viewwidth != 320 || viewheight != 240 ||
+		RenderTarget->GetPitch() != 320 ||
+		!(vis->Style.RenderStyle == LegacyRenderStyles[STYLE_Normal]))
+		return NULL;
+	const int x1 = clamp<int>(vis->x1, 0, 320);
+	const int x2 = clamp<int>(vis->x2, 0, 320);
+	if (x1 >= x2)
+		return NULL;
+	const uint64_t fingerprint = VIZ_TurboSpriteFingerprint(vis, x1, x2);
+	VIZTurboSpriteEffectEntry &entry =
+		vizTurboSpriteEffects[fingerprint & 127];
+	entry.valid = false;
+	entry.fingerprint = fingerprint;
+	entry.sprite = *vis;
+	entry.centeryfrac = centeryfrac;
+	entry.x1 = x1;
+	entry.x2 = x2;
+	entry.marked = false;
+	entry.floorclip.assign(mfloorclip + x1, mfloorclip + x2);
+	entry.ceilingclip.assign(mceilingclip + x1, mceilingclip + x2);
+	entry.spans.clear();
+	entry.values.clear();
+	entry.spans.reserve((x2 - x1) * 2);
+	entry.values.reserve((x2 - x1) * 120);
+	vizTurboSpriteCapture = &entry;
+	return &entry;
+}
+
+//VIZDOOM_CODE
+static void VIZ_TurboSpriteCaptureColumn (int x, int y1, int y2)
+{
+	if (vizTurboSpriteCapture == NULL || y1 > y2)
+		return;
+	BYTE *buffer = RenderTarget->GetBuffer();
+	VIZTurboSpriteEffectSpan span = {
+		(unsigned short)x,
+		(unsigned short)y1,
+		(unsigned short)y2,
+		(unsigned int)vizTurboSpriteCapture->values.size()
+	};
+	vizTurboSpriteCapture->spans.push_back(span);
+	for (int y = y1; y <= y2; ++y)
+		vizTurboSpriteCapture->values.push_back(buffer[y * 320 + x]);
+}
+
+//VIZDOOM_CODE
+static size_t VIZ_TurboSpriteCaptureSpans (int x1)
+{
+	if (vizTurboSpriteCapture == NULL)
+		return 0;
+	const size_t start = vizTurboSpriteCapture->spans.size();
+	for (int column = 0; column < 4; ++column)
+	{
+		for (unsigned int *span = dc_tspans[column];
+			span < dc_ctspan[column]; span += 2)
+		{
+			VIZTurboSpriteEffectSpan effect = {
+				(unsigned short)(x1 + column),
+				(unsigned short)span[0],
+				(unsigned short)span[1],
+				(unsigned int)vizTurboSpriteCapture->values.size()
+			};
+			vizTurboSpriteCapture->spans.push_back(effect);
+			vizTurboSpriteCapture->values.resize(
+				vizTurboSpriteCapture->values.size() + span[1] - span[0] + 1);
+		}
+	}
+	return start;
+}
+
+//VIZDOOM_CODE
+static void VIZ_TurboSpriteCaptureValues (size_t start)
+{
+	if (vizTurboSpriteCapture == NULL)
+		return;
+	BYTE *buffer = RenderTarget->GetBuffer();
+	for (size_t index = start;
+		index < vizTurboSpriteCapture->spans.size(); ++index)
+	{
+		const VIZTurboSpriteEffectSpan &span =
+			vizTurboSpriteCapture->spans[index];
+		unsigned int value = span.values;
+		for (unsigned int y = span.y1; y <= span.y2; ++y)
+			vizTurboSpriteCapture->values[value++] = buffer[y * 320 + span.x];
+	}
+}
+
+//VIZDOOM_CODE
+static void VIZ_TurboSpriteEffectFinish (VIZTurboSpriteEffectEntry *entry)
+{
+	if (entry != NULL)
+	{
+		int y1 = 240;
+		int y2 = 0;
+		for (size_t index = 0; index < entry->spans.size(); ++index)
+		{
+			y1 = MIN<int>(y1, entry->spans[index].y1);
+			y2 = MAX<int>(y2, entry->spans[index].y2 + 1);
+		}
+		entry->rows.clear();
+		entry->rowValues.clear();
+		if (y1 < y2)
+		{
+			const int width = entry->x2 - entry->x1;
+			const size_t area = (size_t)width * (y2 - y1);
+			entry->scratchMask.assign(area, 0);
+			entry->scratchValues.resize(area);
+			for (size_t index = 0; index < entry->spans.size(); ++index)
+			{
+				const VIZTurboSpriteEffectSpan &span = entry->spans[index];
+				unsigned int value = span.values;
+				for (unsigned int y = span.y1; y <= span.y2; ++y)
+				{
+					const size_t offset =
+						(size_t)(y - y1) * width + span.x - entry->x1;
+					entry->scratchMask[offset] = 1;
+					entry->scratchValues[offset] = entry->values[value++];
+				}
+			}
+			for (int y = y1; y < y2; ++y)
+			{
+				const size_t row = (size_t)(y - y1) * width;
+				for (int x = 0; x < width; )
+				{
+					while (x < width && entry->scratchMask[row + x] == 0) ++x;
+					const int run = x;
+					while (x < width && entry->scratchMask[row + x] != 0) ++x;
+					if (run < x)
+					{
+						VIZTurboSpriteEffectRow replay = {
+							(unsigned short)y,
+							(unsigned short)(entry->x1 + run),
+							(unsigned short)(entry->x1 + x),
+							(unsigned int)entry->rowValues.size()
+						};
+						entry->rows.push_back(replay);
+						entry->rowValues.insert(entry->rowValues.end(),
+							entry->scratchValues.begin() + row + run,
+							entry->scratchValues.begin() + row + x);
+					}
+				}
+			}
+		}
+		entry->valid = true;
+	}
+	vizTurboSpriteCapture = NULL;
+}
+
 void R_DrawMaskedColumn (const BYTE *column, const FTexture::Span *span)
 {
 	while (span->Length != 0)
@@ -317,6 +655,7 @@ void R_DrawMaskedColumn (const BYTE *column, const FTexture::Span *span)
 			dc_dest = ylookup[dc_yl] + dc_x + dc_destorg;
 			dc_count = dc_yh - dc_yl + 1;
 			colfunc ();
+			VIZ_TurboSpriteCaptureColumn(dc_x, dc_yl, dc_yh); //VIZDOOM_CODE
 
 			//VIZDOOM_CODE
 			if(vizDepthMap!=NULL) {
@@ -340,6 +679,13 @@ nextpost:
 void R_DrawVisSprite (vissprite_t *vis)
 {
 	if(vizLabels!=NULL) vizLabels->setSprite(vis);
+	if (VIZ_TurboSpriteEffectLookup(vis)) //VIZDOOM_CODE
+	{
+		NetUpdate (); //VIZDOOM_CODE
+		return; //VIZDOOM_CODE
+	}
+	VIZTurboSpriteEffectEntry *vizTurboSpriteEntry =
+		VIZ_TurboSpriteEffectPrepare(vis); //VIZDOOM_CODE
 
 	const BYTE *pixels;
 	const FTexture::Span *spans;
@@ -395,7 +741,23 @@ void R_DrawVisSprite (vissprite_t *vis)
 			sprflipvert = false;
 			sprtopscreen = centeryfrac - FixedMul(dc_texturemid, spryscale);
 		}
-
+		//VIZDOOM_CODE
+		const fixed_t spriteEnd = sprtopscreen + spryscale * tex->GetHeight();
+		const int vizTurboMarkY1 =
+			MIN(sprtopscreen, spriteEnd) >> FRACBITS; //VIZDOOM_CODE
+		const int vizTurboMarkY2 =
+			(MAX(sprtopscreen, spriteEnd) + FRACUNIT - 1) >> FRACBITS; //VIZDOOM_CODE
+		VIZ_TurboMarkMaskedRect(
+			vis->x1,
+			vizTurboMarkY1,
+			vis->x2,
+			vizTurboMarkY2);
+		if (vizTurboSpriteEntry != NULL) //VIZDOOM_CODE
+		{
+			vizTurboSpriteEntry->marked = true;
+			vizTurboSpriteEntry->markY1 = vizTurboMarkY1;
+			vizTurboSpriteEntry->markY2 = vizTurboMarkY2;
+		}
 		dc_x = vis->x1;
 		x2 = vis->x2;
 
@@ -431,7 +793,10 @@ void R_DrawVisSprite (vissprite_t *vis)
 					}
 				}
 
+				const size_t vizTurboCaptureStart =
+					VIZ_TurboSpriteCaptureSpans(dc_x - 4); //VIZDOOM_CODE
 				rt_draw4cols (dc_x - 4);
+				VIZ_TurboSpriteCaptureValues(vizTurboCaptureStart); //VIZDOOM_CODE
 			}
 
 			while (dc_x < x2)
@@ -445,6 +810,7 @@ void R_DrawVisSprite (vissprite_t *vis)
 	}
 
 	R_FinishSetPatchStyle ();
+	VIZ_TurboSpriteEffectFinish(vizTurboSpriteEntry); //VIZDOOM_CODE
 
 	NetUpdate ();
 
@@ -2123,6 +2489,9 @@ void R_DrawSprite (vissprite_t *spr)
 		spr->Style.colormap = colormap;
 		return;
 	}
+	if (VIZ_TurboSpriteClipLookup(
+		spr, topclip, botclip, clipbot, cliptop, x1, x2)) //VIZDOOM_CODE
+		goto viz_turbo_draw_sprite; //VIZDOOM_CODE
 
 	i = x2 - x1;
 	clip1 = clipbot + x1;
@@ -2214,8 +2583,11 @@ void R_DrawSprite (vissprite_t *spr)
 			} while (--i);
 		}
 	}
+	VIZ_TurboSpriteClipStore(
+		spr, topclip, botclip, clipbot, cliptop, x1, x2); //VIZDOOM_CODE
 
 	// all clipping has been performed, so draw the sprite
+	viz_turbo_draw_sprite: //VIZDOOM_CODE
 
 	if (!spr->bIsVoxel)
 	{
@@ -2555,6 +2927,7 @@ void R_DrawParticle (vissprite_t *vis)
 	int ycount = vis->gzt - yl + 1;
 	int x1 = vis->x1;
 	int countbase = vis->x2 - x1;
+	VIZ_TurboMarkMaskedRect(x1, yl, vis->x2, yl + ycount); //VIZDOOM_CODE
 
 	R_DrawMaskedSegsBehindParticle (vis);
 

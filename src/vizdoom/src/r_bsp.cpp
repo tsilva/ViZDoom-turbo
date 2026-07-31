@@ -993,6 +993,13 @@ void R_FakeDrawLoop(subsector_t *sub)
 
 	count = sub->numlines;
 	line = sub->firstline;
+	extern bool vizTurboBackgroundGeometryReplay; //VIZDOOM_CODE
+	//VIZDOOM_CODE
+	if (vizTurboBackgroundGeometryReplay && count > 1)
+	{
+		line += count - 1;
+		count = 1;
+	}
 
 	while (count--)
 	{

@@ -31,12 +31,12 @@
 
 #include "d_main.h"
 #include "g_game.h"
+#include "g_level.h"
 #include "sbar.h"
 #include "c_dispatch.h"
 #include "i_sound.h"
 #include "i_system.h"
 #include "hardware.h"
-
 #include <cstdlib>
 
 #ifndef _WIN32
@@ -650,4 +650,16 @@ void VIZ_DebugMsg(int level, const char *func, const char *msg, ...){
     va_end(arg_ptr);
 
     VIZ_PrintFuncMsg(func, debug_msg);
+}
+
+void VIZ_TurboResetMap(char *command) {
+    char *map = strchr(command, ';');
+    if (map == NULL) VIZ_Error(VIZ_FUNC, "Invalid Turbo reset command.");
+    *map++ = '\0';
+    viz_seed.CmdSet(command);
+    rngseed = atoi(command);
+    staticrngseed = rngseed;
+    use_staticrng = true;
+    G_DeferedInitNew(map);
+    viz_override_player.CmdSet("0");
 }

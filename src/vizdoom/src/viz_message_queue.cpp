@@ -239,6 +239,10 @@ void VIZ_MQTic(){
                 break;
 
             case VIZ_MSG_CODE_TURBO_RESET:
+                if(msg.command[0] != '\0') { //VIZDOOM_CODE
+                    VIZ_TurboResetMap(msg.command);
+                    VIZ_CVARsUpdate();
+                }
                 vizTurboReset = true;
                 vizTurboResetStarted = false;
                 vizTurboResetInitialTic = level.maptime;

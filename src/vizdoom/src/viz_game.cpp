@@ -336,6 +336,12 @@ void VIZ_GameStateInit(){
     vizGameStateSM->PLAYER_HAS_ACTOR = false;
     vizGameStateSM->PLAYER_DEAD = true;
     vizGameStateSM->SCREEN_UPDATE_SEQUENCE = 0;
+    vizGameStateSM->TURBO_BACKGROUND_TOKEN = 0; //VIZDOOM_CODE
+    vizGameStateSM->TURBO_BACKGROUND_DIRTY_TILES = ~(uint64_t)0; //VIZDOOM_CODE
+    vizGameStateSM->TURBO_BACKGROUND_DIRTY_TILES_HIGH =
+        ((uint64_t)1 << 57) - 1; //VIZDOOM_CODE
+    vizGameStateSM->TURBO_BACKGROUND_SLOT = 0; //VIZDOOM_CODE
+    vizGameStateSM->TURBO_BACKGROUND_HIT = false; //VIZDOOM_CODE
     vizGameStateSM->FAST_COMMAND_SEQUENCE = 0;
     vizGameStateSM->FAST_RECEIVED_SEQUENCE = 0;
     vizGameStateSM->FAST_DONE_SEQUENCE = 0;
@@ -416,6 +422,19 @@ void VIZ_GameStateTic(){
 
 void VIZ_GameStateUpdate(){
     if(!vizGameStateSM) return;
+
+    //VIZDOOM_CODE
+    extern uint64_t vizTurboBackgroundToken;
+    extern uint64_t vizTurboBackgroundDirtyTiles;
+    extern uint64_t vizTurboBackgroundDirtyTilesHigh;
+    extern unsigned int vizTurboBackgroundSlot;
+    extern bool vizTurboBackgroundCacheHit;
+    vizGameStateSM->TURBO_BACKGROUND_TOKEN = vizTurboBackgroundToken;
+    vizGameStateSM->TURBO_BACKGROUND_DIRTY_TILES = vizTurboBackgroundDirtyTiles;
+    vizGameStateSM->TURBO_BACKGROUND_DIRTY_TILES_HIGH =
+        vizTurboBackgroundDirtyTilesHigh;
+    vizGameStateSM->TURBO_BACKGROUND_SLOT = vizTurboBackgroundSlot;
+    vizGameStateSM->TURBO_BACKGROUND_HIT = vizTurboBackgroundCacheHit;
 
     VIZ_GameStateUpdateVariables();
 

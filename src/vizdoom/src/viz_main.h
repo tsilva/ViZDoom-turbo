@@ -48,6 +48,8 @@ void VIZ_CVARsInit();
 
 void VIZ_CVARsUpdate();
 
+void VIZ_TurboResetMap(char *command);
+
 void VIZ_Close();
 
 void VIZ_IgnoreNextDoomError();

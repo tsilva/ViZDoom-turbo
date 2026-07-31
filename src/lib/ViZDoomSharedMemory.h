@@ -131,6 +131,11 @@ namespace vizdoom {
         int SCREEN_FORMAT;
         uint8_t SCREEN_PALETTE[256 * 3];
         uint32_t SCREEN_UPDATE_SEQUENCE;
+        uint64_t TURBO_BACKGROUND_TOKEN;
+        uint64_t TURBO_BACKGROUND_DIRTY_TILES;
+        uint64_t TURBO_BACKGROUND_DIRTY_TILES_HIGH;
+        uint32_t TURBO_BACKGROUND_SLOT;
+        bool TURBO_BACKGROUND_HIT;
 
         // BUFFERS
         bool DEPTH_BUFFER;
