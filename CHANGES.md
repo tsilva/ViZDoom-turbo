@@ -4,6 +4,10 @@
 
 - Nothing yet.
 
+## 1.3.0.post19 - 2026-07-31
+
+- Optimize RLab environment throughput.
+
 ## 1.3.0.post18 - 2026-07-29
 
 - Optimize rendered RLab throughput.
