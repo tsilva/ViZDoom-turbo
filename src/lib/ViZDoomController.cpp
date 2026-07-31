@@ -363,8 +363,8 @@ namespace vizdoom {
         bool ticPossibleChecked) {
 
         if (!this->doomRunning) throw ViZDoomIsNotRunningException();
-        if (tics <= 1) {
-            throw std::invalid_argument("batched tics requires at least two tics");
+        if (tics == 0) {
+            throw std::invalid_argument("batched tics requires at least one tic");
         }
 		if (!ticPossibleChecked && !this->isTicPossible()) {
             this->batchInFlight = false;
@@ -413,7 +413,10 @@ namespace vizdoom {
 
     void DoomController::ticsBatched(unsigned int tics, bool update) {
 
-        if (tics <= 1) {
+        if (tics == 0) {
+            throw std::invalid_argument("batched tics requires at least one tic");
+        }
+        if (tics == 1) {
             this->tics(tics, update);
             return;
         }

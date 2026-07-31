@@ -992,6 +992,12 @@ def test_exact_profile_detects_custom_native_core() -> None:
         env.close()
 
 
+@pytest.mark.parametrize("frame_skip", [0, -1])
+def test_nonpositive_frame_skip_is_rejected(frame_skip: int) -> None:
+    with pytest.raises(ValueError, match="frame_skip must be a positive integer"):
+        make_exact_env(frame_skip=frame_skip)
+
+
 def test_native_pipeline_disable_switch_uses_generic_rgb_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1046,14 +1052,18 @@ def test_non_fast_path_profiles_use_generic_implementation(
         env.close()
 
 
+@pytest.mark.parametrize("frame_skip", [1, 4])
 def test_native_pipeline_matches_fallback_through_terminals_and_masked_resets(
     monkeypatch: pytest.MonkeyPatch,
+    frame_skip: int,
 ) -> None:
     native = make_exact_env(
+        frame_skip=frame_skip,
         vizdoom_config={"episode_timeout": 300, "episode_start_time": 1},
     )
     monkeypatch.setenv("VIZDOOM_TURBO_DISABLE_NATIVE_PIPELINE", "1")
     fallback = make_exact_env(
+        frame_skip=frame_skip,
         vizdoom_config={"episode_timeout": 300, "episode_start_time": 1},
     )
     rng = np.random.default_rng(90210)
@@ -1061,12 +1071,31 @@ def test_native_pipeline_matches_fallback_through_terminals_and_masked_resets(
     terminations = 0
     truncations = 0
     try:
+        assert native.num_envs == 4
+        assert (native.raw_height, native.raw_width) == (240, 320)
+        assert (native.obs_height, native.obs_width) == (84, 84)
+        assert native.obs_grayscale is True
+        assert native.obs_layout == "chw"
+        assert native.frame_skip == frame_skip
+        assert native.maxpool_last_two is False
+        assert native._native_stepper is not None
+        assert native._use_indexed_native is True
+        assert all(
+            game.get_screen_format() == vzd.ScreenFormat.DOOM_256_COLORS8
+            for game in native._games
+        )
+        assert fallback._native_stepper is None
+        assert fallback._use_indexed_native is False
+        assert all(
+            game.get_screen_format() == vzd.ScreenFormat.RGB24
+            for game in fallback._games
+        )
         native_observations, native_infos = native.reset(seed=71)
         fallback_observations, fallback_infos = fallback.reset(seed=71)
         np.testing.assert_array_equal(native_observations, fallback_observations)
         assert_info_equal(native_infos, fallback_infos)
 
-        for step in range(160):
+        for step in range(640 // frame_skip):
             actions = rng.integers(
                 native.single_action_space.n,
                 size=native.num_envs,
