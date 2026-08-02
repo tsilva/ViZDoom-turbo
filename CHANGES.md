@@ -4,6 +4,10 @@
 
 - Nothing yet.
 
+## 1.3.0.post21 - 2026-08-02
+
+- Optimize turbo vector environment throughput.
+
 ## 1.3.0.post20 - 2026-07-31
 
 - Support single-tic native batch steps.
