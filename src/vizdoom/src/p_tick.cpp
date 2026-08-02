@@ -34,6 +34,7 @@
 #include "g_level.h"
 
 extern gamestate_t wipegamestate;
+EXTERN_CVAR (Bool, viz_turbo_profile) //VIZDOOM_CODE
 
 //==========================================================================
 //
@@ -69,6 +70,11 @@ bool P_CheckTickerPaused ()
 void P_Ticker (void)
 {
 	int i;
+	//VIZDOOM_CODE
+	static const bool vizTurboBasicTickScans =
+		std::getenv("VIZDOOM_TURBO_LEGACY_TICK_SCANS") == NULL;
+	static const bool vizTurboSkipStatusBarTick =
+		std::getenv("VIZDOOM_TURBO_LEGACY_STATUS_BAR_TICK") == NULL; //VIZDOOM_CODE
 
 	interpolator.UpdateInterpolations ();
 	r_NoInterpolate = true;
@@ -96,17 +102,20 @@ void P_Ticker (void)
 		}
 	}
 
-	// [BC] Do a quick check to see if anyone has the freeze time power. If they do,
-	// then don't resume the sound, since one of the effects of that power is to shut
-	// off the music.
-	for (i = 0; i < MAXPLAYERS; i++ )
+	if (!vizTurboBasicTickScans || !*viz_turbo_profile) //VIZDOOM_CODE
 	{
-		if (playeringame[i] && players[i].timefreezer != 0)
-			break;
-	}
+		// [BC] Do a quick check to see if anyone has the freeze time power. If they do,
+		// then don't resume the sound, since one of the effects of that power is to shut
+		// off the music.
+		for (i = 0; i < MAXPLAYERS; i++ )
+		{
+			if (playeringame[i] && players[i].timefreezer != 0)
+				break;
+		}
 
-	if ( i == MAXPLAYERS )
-		S_ResumeSound (false);
+		if ( i == MAXPLAYERS )
+			S_ResumeSound (false);
+	}
 
 	P_ResetSightCounters (false);
 
@@ -118,12 +127,22 @@ void P_Ticker (void)
 		P_ThinkParticles ();	// [RH] make the particles think
 	}
 
-	for (i = 0; i<MAXPLAYERS; i++)
-		if (playeringame[i] &&
-			/*Added by MC: Freeze mode.*/!(bglobal.freeze && players[i].Bot != NULL))
-			P_PlayerThink (&players[i]);
+	if (vizTurboBasicTickScans && *viz_turbo_profile) //VIZDOOM_CODE
+	{
+		if (playeringame[consoleplayer] &&
+			!(bglobal.freeze && players[consoleplayer].Bot != NULL))
+			P_PlayerThink (&players[consoleplayer]);
+	}
+	else //VIZDOOM_CODE
+	{
+		for (i = 0; i<MAXPLAYERS; i++)
+			if (playeringame[i] &&
+				/*Added by MC: Freeze mode.*/!(bglobal.freeze && players[i].Bot != NULL))
+				P_PlayerThink (&players[i]);
+	}
 
-	StatusBar->Tick ();		// [RH] moved this here
+	if (!vizTurboSkipStatusBarTick || !*viz_turbo_profile) //VIZDOOM_CODE
+		StatusBar->Tick ();		// [RH] moved this here
 	level.Tick ();			// [RH] let the level tick
 	DThinker::RunThinkers ();
 
@@ -131,7 +150,10 @@ void P_Ticker (void)
 	if (!bglobal.freeze && !(level.flags2 & LEVEL2_FROZEN))
 	{
 		P_UpdateSpecials ();
-		P_RunEffects ();	// [RH] Run particle effects
+		static const bool vizTurboSkipActorEffects =
+			std::getenv("VIZDOOM_TURBO_LEGACY_ACTOR_EFFECTS") == NULL; //VIZDOOM_CODE
+		if (!vizTurboSkipActorEffects || !*viz_turbo_profile) //VIZDOOM_CODE
+			P_RunEffects ();	// [RH] Run particle effects
 	}
 
 	// for par times

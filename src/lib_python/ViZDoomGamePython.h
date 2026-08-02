@@ -141,6 +141,8 @@ namespace vizdoom {
         double turboTotalBefore;
         bool turboStepAdvanced;
         bool turboActionInitialized;
+        bool turboResetInFlight;
+        unsigned int turboResetSeed;
         unsigned int turboTics;
         std::string turboTicsCount;
 
@@ -178,6 +180,7 @@ namespace vizdoom {
             unsigned int seed,
             double *gameVariables,
             size_t gameVariablesSize);
+        void turboResetStart(unsigned int seed);
         void turboReadIndexedInto(
             uint8_t *frame,
             size_t frameSize,

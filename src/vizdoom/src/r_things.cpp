@@ -289,7 +289,7 @@ struct VIZTurboSpriteEffectEntry
 
 //VIZDOOM_CODE
 static VIZTurboSpriteEffectEntry *vizTurboSpriteEffects =
-	new VIZTurboSpriteEffectEntry[128];
+	new VIZTurboSpriteEffectEntry[2048];
 //VIZDOOM_CODE
 static VIZTurboSpriteEffectEntry *vizTurboSpriteCapture;
 //VIZDOOM_CODE
@@ -315,7 +315,27 @@ struct VIZTurboSpriteClipEntry
 
 //VIZDOOM_CODE
 static VIZTurboSpriteClipEntry *vizTurboSpriteClips =
-	new VIZTurboSpriteClipEntry[64];
+	new VIZTurboSpriteClipEntry[1024];
+
+//VIZDOOM_CODE
+static size_t VIZ_TurboSpriteClipIndex (uint64_t fingerprint)
+{
+	static const bool small =
+		getenv("VIZDOOM_TURBO_SMALL_SPRITE_CACHE") != NULL;
+	static const bool medium =
+		getenv("VIZDOOM_TURBO_MEDIUM_SPRITE_CACHE") != NULL;
+	return fingerprint & (small ? 63 : medium ? 255 : 1023);
+}
+
+//VIZDOOM_CODE
+static size_t VIZ_TurboSpriteEffectIndex (uint64_t fingerprint)
+{
+	static const bool small =
+		getenv("VIZDOOM_TURBO_SMALL_SPRITE_CACHE") != NULL;
+	static const bool medium =
+		getenv("VIZDOOM_TURBO_MEDIUM_SPRITE_CACHE") != NULL;
+	return fingerprint & (small ? 127 : medium ? 511 : 2047);
+}
 
 //VIZDOOM_CODE
 static uint64_t VIZ_TurboSpriteClipFingerprint (
@@ -340,7 +360,8 @@ static bool VIZ_TurboSpriteClipLookup (
 		return false;
 	const uint64_t fingerprint =
 		VIZ_TurboSpriteClipFingerprint(sprite, topclip, botclip);
-	VIZTurboSpriteClipEntry &entry = vizTurboSpriteClips[fingerprint & 63];
+	VIZTurboSpriteClipEntry &entry =
+		vizTurboSpriteClips[VIZ_TurboSpriteClipIndex(fingerprint)];
 	if (!entry.valid || entry.fingerprint != fingerprint ||
 		entry.backgroundToken != vizTurboBackgroundToken ||
 		entry.topclip != topclip || entry.botclip != botclip ||
@@ -363,7 +384,8 @@ static void VIZ_TurboSpriteClipStore (
 		return;
 	const uint64_t fingerprint =
 		VIZ_TurboSpriteClipFingerprint(sprite, topclip, botclip);
-	VIZTurboSpriteClipEntry &entry = vizTurboSpriteClips[fingerprint & 63];
+	VIZTurboSpriteClipEntry &entry =
+		vizTurboSpriteClips[VIZ_TurboSpriteClipIndex(fingerprint)];
 	entry.valid = false;
 	entry.fingerprint = fingerprint;
 	entry.backgroundToken = vizTurboBackgroundToken;
@@ -408,7 +430,7 @@ static bool VIZ_TurboSpriteEffectLookup (vissprite_t *vis)
 		return false;
 	const uint64_t fingerprint = VIZ_TurboSpriteFingerprint(vis, x1, x2);
 	VIZTurboSpriteEffectEntry &entry =
-		vizTurboSpriteEffects[fingerprint & 127];
+		vizTurboSpriteEffects[VIZ_TurboSpriteEffectIndex(fingerprint)];
 	if (!entry.valid || entry.fingerprint != fingerprint ||
 		entry.centeryfrac != centeryfrac || entry.x1 != x1 || entry.x2 != x2 ||
 		memcmp(&entry.sprite, vis, sizeof(*vis)) != 0 ||
@@ -444,7 +466,7 @@ static VIZTurboSpriteEffectEntry *VIZ_TurboSpriteEffectPrepare (vissprite_t *vis
 		return NULL;
 	const uint64_t fingerprint = VIZ_TurboSpriteFingerprint(vis, x1, x2);
 	VIZTurboSpriteEffectEntry &entry =
-		vizTurboSpriteEffects[fingerprint & 127];
+		vizTurboSpriteEffects[VIZ_TurboSpriteEffectIndex(fingerprint)];
 	entry.valid = false;
 	entry.fingerprint = fingerprint;
 	entry.sprite = *vis;

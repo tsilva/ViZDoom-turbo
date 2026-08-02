@@ -85,6 +85,8 @@ extern FILE *Logfile;
 
 FRandom pr_acs ("ACS");
 
+EXTERN_CVAR (Bool, viz_turbo_profile) //VIZDOOM_CODE
+
 // I imagine this much stack space is probably overkill, but it could
 // potentially get used with recursive functions.
 #define STACK_SIZE 4096
@@ -6133,6 +6135,23 @@ int DLevelScript::RunScript ()
 	ScriptFunction *activeFunction = NULL;
 	FRemapTable *translation = 0;
 	int resultValue = 1;
+	//VIZDOOM_CODE
+	static const bool vizTurboBasicRewardScript =
+		getenv("VIZDOOM_TURBO_LEGACY_ACS_REWARD") == NULL;
+	//VIZDOOM_CODE
+	if (vizTurboBasicRewardScript && *viz_turbo_profile && script == 3 &&
+		state == SCRIPT_Delayed && statedata == 1 && numlocalvars >= 2)
+	{
+		AInventory *clip = activator != NULL ? activator->FindInventory(NAME_Clip) : NULL;
+		const int bullets = clip != NULL ? clip->Amount : 0;
+		if (bullets < localvars[0])
+		{
+			ACS_GlobalVars[0] -= 5 * FRACUNIT;
+		}
+		localvars[0] = bullets;
+		localvars[1] = bullets;
+		return resultValue;
+	}
 
 	if (InModuleScriptNumber >= 0)
 	{

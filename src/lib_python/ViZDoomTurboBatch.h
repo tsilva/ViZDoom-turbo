@@ -49,6 +49,7 @@ namespace vizdoom {
             pyb::array_t<double, pyb::array::c_style> gameVariables);
 
         void stepLaneInto(size_t lane);
+        void resetLaneInto(size_t lane, unsigned int seed);
         void readLaneInto(size_t lane);
         pyb::array_t<uint8_t> indexedFrameView(size_t lane);
         pyb::array_t<uint8_t> paletteView(size_t lane);
@@ -58,11 +59,16 @@ namespace vizdoom {
         void stepLaneNative(size_t lane);
         void startLaneNative(size_t lane);
         void finishLaneNative(size_t lane);
+        void startResetLaneNative(size_t lane, unsigned int seed);
         void resetLaneNative(size_t lane, unsigned int seed);
         static uint64_t nativeStepLane(void *context, size_t lane) noexcept;
         static uint64_t nativeStartLane(void *context, size_t lane) noexcept;
         static uint64_t nativeStartAll(void *context) noexcept;
         static uint64_t nativeFinishLane(void *context, size_t lane) noexcept;
+        static unsigned int nativeStartResetLane(
+            void *context,
+            size_t lane,
+            unsigned int seed) noexcept;
         static unsigned int nativeResetLane(
             void *context,
             size_t lane,

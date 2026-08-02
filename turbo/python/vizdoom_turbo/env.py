@@ -865,6 +865,8 @@ class VizdoomTurboVecEnv(VectorEnv):
                 (self.num_envs, self.raw_height, self.raw_width), dtype=np.uint8
             )
             self._native_palettes = np.empty((self.num_envs, 256, 3), dtype=np.uint8)
+            self._native_terminal_indexed_frames = np.empty_like(self._native_indexed_frames)
+            self._native_terminal_palettes = np.empty_like(self._native_palettes)
             self._native_stepper = self._native_stepper_type(
                 self._games,
                 self.frame_skip,
@@ -892,6 +894,13 @@ class VizdoomTurboVecEnv(VectorEnv):
                 native_api[6]
                 if len(native_api) >= 7
                 and os.environ.get("VIZDOOM_TURBO_DISABLE_BACKGROUND_PROVENANCE") != "1"
+                else None
+            )
+            self._native_reset_start_api = (
+                native_api[7]
+                if len(native_api) >= 8
+                and self._optimized_profile
+                and os.environ.get("VIZDOOM_TURBO_DISABLE_ASYNC_RESET") != "1"
                 else None
             )
             self._native_stack_lanes = tuple(self._stack[lane] for lane in range(self.num_envs))
@@ -1317,6 +1326,22 @@ class VizdoomTurboVecEnv(VectorEnv):
                 )
                 self._native_reset_seeds[lane] = game_seeds[lane]
         else:
+            pending_snapshot_lanes = np.flatnonzero(snapshot_mask & self._pending_reset)
+            if (
+                self._native_stepper is not None
+                and self._native_reset_start_api is not None
+                and hasattr(self._native_stepper, "reset_lane_into")
+                and pending_snapshot_lanes.size
+            ):
+                self._pool.run(
+                    [
+                        (
+                            self._native_stepper.reset_lane_into,
+                            (int(lane), int(self._native_reset_seeds[lane])),
+                        )
+                        for lane in pending_snapshot_lanes
+                    ]
+                )
             reset_lanes = []
             reset_jobs = []
             for lane in reset_lane_values:
@@ -1438,6 +1463,17 @@ class VizdoomTurboVecEnv(VectorEnv):
         if self._collect_derived_signals:
             for lane in reset_lane_values:
                 self._update_signal_row(int(lane))
+        if self._native_stepper is not None and self._native_reset_start_api is not None:
+            for lane in reset_lane_values:
+                lane_index = int(lane)
+                generator = self._rngs[lane_index]
+                generator_state = copy.deepcopy(generator.bit_generator.state)
+                self._native_reset_seeds[lane_index] = generator.integers(
+                    0,
+                    np.iinfo(np.uint32).max + 1,
+                    dtype=np.uint32,
+                )
+                generator.bit_generator.state = generator_state
         infos = self._infos(mask.copy())
         infos["state_index"] = self._active_state_indices.copy()
         infos["_state_index"] = mask.copy()
@@ -1560,9 +1596,13 @@ class VizdoomTurboVecEnv(VectorEnv):
 
     def _sync_native_rgb(self, lane: int) -> None:
         if self._native_stepper is not None:
-            self._raw_frames[lane][...] = self._native_palettes[lane][
-                self._native_indexed_frames[lane]
-            ]
+            if self._pending_reset[lane]:
+                palette = self._native_terminal_palettes[lane]
+                indexed = self._native_terminal_indexed_frames[lane]
+            else:
+                palette = self._native_palettes[lane]
+                indexed = self._native_indexed_frames[lane]
+            self._raw_frames[lane][...] = palette[indexed]
 
     def step(self, actions: Any):
         if self.closed:
@@ -1596,7 +1636,13 @@ class VizdoomTurboVecEnv(VectorEnv):
                 self._stack,
                 self._stack_heads,
                 observations,
+                self._native_terminal_indexed_frames,
+                self._native_terminal_palettes,
                 self._native_background_api,
+                self._native_reset_start_api,
+                self._native_reset_seeds
+                if self._native_reset_start_api is not None
+                else None,
             )
             rewards[...] = self._native_rewards
             terminated[...] = self._native_terminated

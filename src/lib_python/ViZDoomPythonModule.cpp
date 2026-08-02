@@ -833,6 +833,11 @@ PYBIND11_MODULE(vizdoom, vz){
             pyb::arg("truncated"),
             pyb::arg("game_variables"))
         .def("step_lane_into", &TurboBatchStepper::stepLaneInto, pyb::arg("lane"))
+        .def(
+            "reset_lane_into",
+            &TurboBatchStepper::resetLaneInto,
+            pyb::arg("lane"),
+            pyb::arg("seed"))
         .def("read_lane_into", &TurboBatchStepper::readLaneInto, pyb::arg("lane"))
         .def("indexed_frame_view", &TurboBatchStepper::indexedFrameView, pyb::arg("lane"))
         .def("palette_view", &TurboBatchStepper::paletteView, pyb::arg("lane"))

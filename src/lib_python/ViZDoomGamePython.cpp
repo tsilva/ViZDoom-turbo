@@ -39,6 +39,8 @@ namespace vizdoom {
         this->variablesShape.resize(1);
         this->turboTics = 0;
         this->turboActionInitialized = false;
+        this->turboResetInFlight = false;
+        this->turboResetSeed = 0;
     }
 
     void DoomGamePython::setAction(pyb::object const &pyAction) {
@@ -394,14 +396,37 @@ namespace vizdoom {
         size_t gameVariablesSize) {
         if (gameVariablesSize != this->availableGameVariables.size())
             throw std::invalid_argument("game variable width does not match available variables");
-        DoomGame::setSeed(seed);
-        this->doomController->restartMapBatched();
+        if (this->turboResetInFlight) {
+            this->doomController->finishRestartMapBatched();
+            const bool requestedResetCompleted = this->turboResetSeed == seed;
+            this->turboResetInFlight = false;
+            if (!requestedResetCompleted) {
+                DoomGame::setSeed(seed);
+                this->doomController->restartMapBatched();
+            }
+        }
+        else {
+            DoomGame::setSeed(seed);
+            this->doomController->restartMapBatched();
+        }
         this->turboActionInitialized = false;
         this->resetState();
         for (size_t index = 0; index < gameVariablesSize; ++index) {
             gameVariables[index] =
                 this->doomController->getGameVariable(this->availableGameVariables[index]);
         }
+    }
+
+    void DoomGamePython::turboResetStart(unsigned int seed) {
+        if (this->turboResetInFlight) {
+            if (this->turboResetSeed != seed)
+                throw std::logic_error("a different Turbo reset is already in flight");
+            return;
+        }
+        DoomGame::setSeed(seed);
+        this->doomController->startRestartMapBatched();
+        this->turboResetSeed = seed;
+        this->turboResetInFlight = true;
     }
 
     void DoomGamePython::turboReadIndexedInto(

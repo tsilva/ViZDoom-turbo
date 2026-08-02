@@ -96,6 +96,7 @@ namespace vizdoom {
         this->doomRunning = false;
         this->doomWorking = false;
         this->batchInFlight = false;
+        this->resetInFlight = false;
         this->fastIPC = false;
         this->fastCommandSequence = 0;
         this->lastBatchTicsMade = 0;
@@ -298,6 +299,7 @@ namespace vizdoom {
         this->depthBuffer = nullptr;
         this->labelsBuffer = nullptr;
         this->automapBuffer = nullptr;
+        this->resetInFlight = false;
         this->fastIPC = false;
         this->fastCommandSequence = 0;
     }
@@ -437,7 +439,7 @@ namespace vizdoom {
     }
 
     //VIZDOOM_CODE
-    void DoomController::restartMapBatched() {
+    void DoomController::startRestartMapBatched() {
         if (!this->doomRunning || this->mapChanging ||
             this->gameState->GAME_MULTIPLAYER || this->demoPath.length()) {
             this->restartMap();
@@ -453,9 +455,22 @@ namespace vizdoom {
         this->resetButtons();
 
         this->sendToDoom(MSG_CODE_TURBO_RESET, resetCommand.c_str(), this->mapStartTime);
+        this->resetInFlight = true;
+    }
+
+    //VIZDOOM_CODE
+    void DoomController::finishRestartMapBatched() {
+        if (!this->resetInFlight) return;
         this->waitForDoomWork();
+        this->resetInFlight = false;
         this->mapLastTic = this->gameState->MAP_TIC;
         this->mapChanging = false;
+    }
+
+    //VIZDOOM_CODE
+    void DoomController::restartMapBatched() {
+        this->startRestartMapBatched();
+        this->finishRestartMapBatched();
     }
 
     void DoomController::restartMap(std::string demoPath) {

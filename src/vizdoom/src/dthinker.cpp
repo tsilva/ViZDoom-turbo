@@ -40,6 +40,12 @@
 #include "doomerrors.h"
 #include "farchive.h"
 
+EXTERN_CVAR (Bool, viz_turbo_profile) //VIZDOOM_CODE
+
+//VIZDOOM_CODE
+static uint64_t vizTurboActiveThinkerStats[2];
+//VIZDOOM_CODE
+static uint64_t vizTurboActiveFreshThinkerStats[2];
 
 static cycle_t ThinkCycles;
 extern cycle_t BotSupportCycles;
@@ -57,6 +63,26 @@ void FThinkerList::AddTail(DThinker *thinker)
 {
 	assert(thinker->PrevThinker == NULL && thinker->NextThinker == NULL);
 	assert(!(thinker->ObjectFlags & OF_EuthanizeMe));
+	//VIZDOOM_CODE
+	const uintptr_t listAddress = (uintptr_t)this;
+	//VIZDOOM_CODE
+	const uintptr_t thinkerLists = (uintptr_t)&DThinker::Thinkers[0];
+	//VIZDOOM_CODE
+	const uintptr_t freshLists = (uintptr_t)&DThinker::FreshThinkers[0];
+	//VIZDOOM_CODE
+	if (listAddress >= thinkerLists &&
+		listAddress < (uintptr_t)&DThinker::Thinkers[MAX_STATNUM + 1])
+	{
+		const size_t stat = (listAddress - thinkerLists) / sizeof(*this);
+		vizTurboActiveThinkerStats[stat / 64] |= (uint64_t)1 << (stat % 64);
+	}
+	//VIZDOOM_CODE
+	else if (listAddress >= freshLists &&
+		listAddress < (uintptr_t)&DThinker::FreshThinkers[MAX_STATNUM + 1])
+	{
+		const size_t stat = (listAddress - freshLists) / sizeof(*this);
+		vizTurboActiveFreshThinkerStats[stat / 64] |= (uint64_t)1 << (stat % 64);
+	}
 	if (Sentinel == NULL)
 	{
 		Sentinel = new DThinker(DThinker::NO_LINK);
@@ -410,19 +436,60 @@ void DThinker::RunThinkers ()
 
 	ThinkCycles.Clock();
 
+	//VIZDOOM_CODE
+	static const bool vizTurboThinkerMask =
+		getenv("VIZDOOM_TURBO_LEGACY_THINKER_SCAN") == NULL;
 	// Tick every thinker left from last time
-	for (i = STAT_FIRST_THINKING; i <= MAX_STATNUM; ++i)
+	if (vizTurboThinkerMask && *viz_turbo_profile) //VIZDOOM_CODE
 	{
-		TickThinkers (&Thinkers[i], NULL);
+		for (int word = 0; word < 2; ++word)
+		{
+			uint64_t stats = vizTurboActiveThinkerStats[word];
+			if (word == 0)
+				stats &= ~(((uint64_t)1 << STAT_FIRST_THINKING) - 1);
+			while (stats != 0)
+			{
+				const int bit = __builtin_ctzll(stats);
+				const int stat = word * 64 + bit;
+				TickThinkers (&Thinkers[stat], NULL);
+				stats &= stats - 1;
+			}
+		}
+	}
+	else //VIZDOOM_CODE
+	{
+		for (i = STAT_FIRST_THINKING; i <= MAX_STATNUM; ++i)
+		{
+			TickThinkers (&Thinkers[i], NULL);
+		}
 	}
 
 	// Keep ticking the fresh thinkers until there are no new ones.
 	do
 	{
 		count = 0;
-		for (i = STAT_FIRST_THINKING; i <= MAX_STATNUM; ++i)
+		if (vizTurboThinkerMask && *viz_turbo_profile) //VIZDOOM_CODE
 		{
-			count += TickThinkers (&FreshThinkers[i], &Thinkers[i]);
+			for (int word = 0; word < 2; ++word)
+			{
+				uint64_t stats = vizTurboActiveFreshThinkerStats[word];
+				if (word == 0)
+					stats &= ~(((uint64_t)1 << STAT_FIRST_THINKING) - 1);
+				while (stats != 0)
+				{
+					const int bit = __builtin_ctzll(stats);
+					const int stat = word * 64 + bit;
+					count += TickThinkers (&FreshThinkers[stat], &Thinkers[stat]);
+					stats &= stats - 1;
+				}
+			}
+		}
+		else //VIZDOOM_CODE
+		{
+			for (i = STAT_FIRST_THINKING; i <= MAX_STATNUM; ++i)
+			{
+				count += TickThinkers (&FreshThinkers[i], &Thinkers[i]);
+			}
 		}
 	} while (count != 0);
 

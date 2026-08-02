@@ -120,6 +120,8 @@ namespace vizdoom {
         void enableFastIPC();
         void restartMap(std::string demoPath = "");
         //VIZDOOM_CODE
+        void startRestartMapBatched();
+        void finishRestartMapBatched();
         void restartMapBatched();
         void respawnPlayer();
         bool isDoomRunning();
@@ -326,6 +328,7 @@ namespace vizdoom {
         bool doomRunning;
         bool doomWorking;
         bool batchInFlight;
+        bool resetInFlight;
         bool fastIPC;
         uint32_t fastCommandSequence;
         unsigned int lastBatchTicsMade;

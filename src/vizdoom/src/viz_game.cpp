@@ -65,6 +65,7 @@ EXTERN_CVAR (Int, viz_afk_timeout)
 EXTERN_CVAR (Float, timelimit)
 EXTERN_CVAR (Bool, viz_notifications)
 EXTERN_CVAR (Int, viz_notifications_tics)
+EXTERN_CVAR (Bool, viz_turbo_profile)
 EXTERN_CVAR (String, snd_backend)
 
 VIZGameState *vizGameStateSM = NULL;
@@ -447,6 +448,13 @@ void VIZ_GameStateUpdate(){
 }
 
 void VIZ_GameStateUpdateVariables(){
+
+    //VIZDOOM_CODE
+    if (*viz_turbo_profile) {
+        vizGameStateSM->MAP_REWARD = ACS_GlobalVars[0];
+        vizGameStateSM->MAP_KILLCOUNT = level.killed_monsters;
+        return;
+    }
 
     // Reward and ACS vars
     for(int i = 0; i < VIZ_GV_USER_COUNT; ++i) vizGameStateSM->MAP_USER_VARS[i] = ACS_GlobalVars[i+1];

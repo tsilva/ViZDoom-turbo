@@ -128,6 +128,12 @@ namespace vizdoom {
         this->stepLaneNative(lane);
     }
 
+    void TurboBatchStepper::resetLaneInto(size_t lane, unsigned int seed) {
+        if (lane >= this->games.size()) throw std::out_of_range("lane is out of range");
+        ReleaseGIL gil;
+        this->resetLaneNative(lane, seed);
+    }
+
     void TurboBatchStepper::stepLaneNative(size_t lane) {
         this->games[lane]->turboStepInto(
             this->actionsData + lane * this->actionWidth,
@@ -164,6 +170,10 @@ namespace vizdoom {
             this->gameVariablesData + lane * this->gameVariablesWidth,
             this->gameVariablesWidth,
             this->treatTimeoutAsTruncation);
+    }
+
+    void TurboBatchStepper::startResetLaneNative(size_t lane, unsigned int seed) {
+        this->games[lane]->turboResetStart(seed);
     }
 
     void TurboBatchStepper::resetLaneNative(size_t lane, unsigned int seed) {
@@ -257,6 +267,21 @@ namespace vizdoom {
         }
     }
 
+    unsigned int TurboBatchStepper::nativeStartResetLane(
+        void *context,
+        size_t lane,
+        unsigned int seed) noexcept {
+        try {
+            TurboBatchStepper *stepper = static_cast<TurboBatchStepper *>(context);
+            if (lane >= stepper->games.size()) return 4;
+            stepper->startResetLaneNative(lane, seed);
+            return 0;
+        }
+        catch (...) {
+            return 4;
+        }
+    }
+
     const uint8_t *TurboBatchStepper::nativeFrame(void *context, size_t lane) noexcept {
         TurboBatchStepper *stepper = static_cast<TurboBatchStepper *>(context);
         if (lane >= stepper->games.size()) return nullptr;
@@ -312,6 +337,8 @@ namespace vizdoom {
             reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeFrame),
             reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativePalette),
             reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeResetLane),
-            reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeBackgroundData));
+            reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeBackgroundData),
+            reinterpret_cast<uintptr_t>(&TurboBatchStepper::nativeStartResetLane));
     }
+
 }

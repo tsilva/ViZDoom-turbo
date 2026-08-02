@@ -90,6 +90,7 @@
 
 //VIZDOOM_CODE
 #include "viz_game.h"
+#include "viz_message_queue.h" //VIZDOOM_CODE
 
 void STAT_StartNewGame(const char *lev);
 void STAT_ChangeLevel(const char *newl);
@@ -99,6 +100,7 @@ EXTERN_CVAR (Float, sv_gravity)
 EXTERN_CVAR (Float, sv_aircontrol)
 EXTERN_CVAR (Int, disableautosave)
 EXTERN_CVAR (String, playerclass)
+EXTERN_CVAR (Bool, viz_turbo_profile) //VIZDOOM_CODE
 
 #define SNAP_ID			MAKE_ID('s','n','A','p')
 #define DSNP_ID			MAKE_ID('d','s','N','p')
@@ -398,6 +400,13 @@ void G_InitNew (const char *mapname, bool bTitleLevel)
 		S_ResumeSound (false);
 	}
 
+	//VIZDOOM_CODE
+	static const bool vizTurboReuseStatusBar =
+		std::getenv("VIZDOOM_TURBO_DISABLE_STATUS_BAR_REUSE") == NULL;
+	//VIZDOOM_CODE
+	if (!(vizTurboReuseStatusBar && vizTurboReset && *viz_turbo_profile &&
+		StatusBar != NULL && !bTitleLevel))
+	{
 	if (StatusBar != NULL)
 	{
 		StatusBar->Destroy();
@@ -440,6 +449,7 @@ void G_InitNew (const char *mapname, bool bTitleLevel)
 			StatusBar = new DBaseStatusBar (0);
 		}
 	}
+	} //VIZDOOM_CODE
 	GC::WriteBarrier(StatusBar);
 	StatusBar->AttachToPlayer (&players[consoleplayer]);
 	StatusBar->NewGame ();
@@ -890,7 +900,7 @@ void DAutosaver::Tick ()
 extern gamestate_t 	wipegamestate; 
  
 void G_DoLoadLevel (int position, bool autosave)
-{ 
+{
 	static int lastposition = 0;
 	gamestate_t oldgs = gamestate;
 	int i;

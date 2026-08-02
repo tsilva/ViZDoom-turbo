@@ -65,10 +65,12 @@ def _trace() -> dict[str, object]:
     reset_count = 0
     try:
         observations, infos = env.reset(seed=123)
+        images = np.stack(env.get_images())
         action_rng = np.random.default_rng(918)
-        event_hashes.append(_event_hash(observations, infos=infos))
+        event_hashes.append(_event_hash(observations, images, infos=infos))
         event_names.append("initial-reset")
         _update_array(trace, observations)
+        _update_array(trace, images)
         _update_infos(trace, infos)
         for step in range(480):
             actions = action_rng.integers(
@@ -77,7 +79,8 @@ def _trace() -> dict[str, object]:
                 dtype=np.int64,
             )
             observations, rewards, terminated, truncated, infos = env.step(actions)
-            values = (observations, rewards, terminated, truncated)
+            images = np.stack(env.get_images())
+            values = (observations, images, rewards, terminated, truncated)
             event_hashes.append(_event_hash(*values, infos=infos))
             event_names.append(f"step-{step}")
             for value in values:
@@ -93,10 +96,12 @@ def _trace() -> dict[str, object]:
                         "state_indices": state_indices,
                     }
                 )
-                event_hashes.append(_event_hash(reset_mask, observations, infos=infos))
+                images = np.stack(env.get_images())
+                event_hashes.append(_event_hash(reset_mask, observations, images, infos=infos))
                 event_names.append(f"reset-after-step-{step}")
                 _update_array(trace, reset_mask)
                 _update_array(trace, observations)
+                _update_array(trace, images)
                 _update_infos(trace, infos)
                 reset_count += 1
         return {
