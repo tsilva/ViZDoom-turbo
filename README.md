@@ -65,6 +65,29 @@ finally:
 The package accepts canonical registered `Vizdoom...` Gymnasium IDs and
 ViZDoom `.cfg` paths.
 
+### Crop or mask observations
+
+The crop API matches the other turbo environments: `obs_crop` contains raw
+screen edges in `(top, bottom, left, right)` order. `obs_crop_mode="remove"`
+removes those edges before resize; `obs_crop_mode="mask"` preserves the raw
+geometry and replaces them with `obs_crop_fill` before resize.
+
+For the classic 320×240 Doom HUD, enable it in ViZDoom and mask its bottom 32
+pixels out of policy observations with:
+
+```python
+env = VizdoomTurboVecEnv(
+    "VizdoomBasic-v1",
+    vizdoom_config={"render_hud": True},
+    obs_crop=(0, 32, 0, 0),
+    obs_crop_mode="mask",
+    obs_crop_fill=0,
+)
+```
+
+The canonical 84×84 grayscale profile performs crop removal and masking
+directly in the indexed native pipeline.
+
 ## Turbo Vector API v1
 
 `VizdoomTurboVecEnv` implements the strict Turbo Vector API v1:

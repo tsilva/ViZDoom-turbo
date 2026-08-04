@@ -992,6 +992,52 @@ def test_exact_profile_detects_custom_native_core() -> None:
         env.close()
 
 
+@pytest.mark.parametrize("crop_mode", ["remove", "mask"])
+def test_enabled_hud_crop_runs_on_native_indexed_path(
+    monkeypatch: pytest.MonkeyPatch,
+    crop_mode: str,
+) -> None:
+    options = {
+        "num_envs": 1,
+        "num_threads": 1,
+        "vizdoom_config": {"render_hud": True},
+        "obs_crop": (0, 32, 0, 0),
+        "obs_crop_mode": crop_mode,
+        "obs_crop_fill": 0,
+    }
+    native = make_exact_env(**options)
+    monkeypatch.setenv("VIZDOOM_TURBO_DISABLE_NATIVE_PIPELINE", "1")
+    fallback = make_exact_env(**options)
+    try:
+        native_observations, native_infos = native.reset(seed=31)
+        fallback_observations, fallback_infos = fallback.reset(seed=31)
+
+        assert native._use_indexed_native is True
+        assert native._native_stepper is not None
+        assert native._games[0].get_screen_format() == vzd.ScreenFormat.DOOM_256_COLORS8
+        assert fallback._use_indexed_native is False
+        assert fallback._native_stepper is None
+        np.testing.assert_array_equal(native_observations, fallback_observations)
+        assert_info_equal(native_infos, fallback_infos)
+        if crop_mode == "mask":
+            assert np.all(native_observations[:, :, 73:, :] == 0)
+            assert np.any(native_observations[:, :, :73, :] != 0)
+        else:
+            assert np.any(native_observations != 0)
+
+        actions = np.zeros(1, dtype=np.int64)
+        native_transition = native.step(actions)
+        fallback_transition = fallback.step(actions)
+        for native_value, fallback_value in zip(
+            native_transition[:4], fallback_transition[:4], strict=True
+        ):
+            np.testing.assert_array_equal(native_value, fallback_value)
+        assert_info_equal(native_transition[4], fallback_transition[4])
+    finally:
+        native.close()
+        fallback.close()
+
+
 @pytest.mark.parametrize("frame_skip", [0, -1])
 def test_nonpositive_frame_skip_is_rejected(frame_skip: int) -> None:
     with pytest.raises(ValueError, match="frame_skip must be a positive integer"):

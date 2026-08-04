@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- Nothing yet.
+- Keep crop removal and masking on the indexed native preprocessing path,
+  including the classic enabled-HUD mask profile.
+- Document the shared `(top, bottom, left, right)` crop-coordinate contract.
 
 ## 1.3.0.post21 - 2026-08-02
 

@@ -52,6 +52,40 @@ def test_crop_mask_preserves_geometry_and_uses_fill() -> None:
     assert np.all(output[:, 1:3, 1:3] == 100)
 
 
+@pytest.mark.parametrize("mask_crop", [False, True])
+def test_indexed_crop_matches_rgb_reference_on_all_four_edges(mask_crop: bool) -> None:
+    rng = np.random.default_rng(508)
+    crop = [7, 32, 11, 13]
+    fill = 19
+    indexed = rng.integers(0, 256, size=(240, 320), dtype=np.uint8)
+    palette = rng.integers(0, 256, size=(256, 3), dtype=np.uint8)
+    rgb = palette[indexed][None]
+    expected = np.empty((1, 84, 84, 1), dtype=np.uint8)
+    preprocess_into(rgb, expected, crop, mask_crop, fill, "area")
+
+    processor = ImageProcessor(
+        1,
+        240,
+        320,
+        84,
+        84,
+        1,
+        crop,
+        mask_crop,
+        fill,
+        "area",
+        4,
+        "chw",
+        1,
+    )
+    stack = np.zeros((4, 84, 84, 1), dtype=np.uint8)
+    head = np.zeros(1, dtype=np.int64)
+    output = np.empty((4, 84, 84), dtype=np.uint8)
+    processor.reset_indexed_lane_into(indexed, palette, stack, head, output)
+
+    np.testing.assert_array_equal(output, np.repeat(expected[0].transpose(2, 0, 1), 4, axis=0))
+
+
 def _write_reference_observation(
     stack: np.ndarray,
     heads: np.ndarray,

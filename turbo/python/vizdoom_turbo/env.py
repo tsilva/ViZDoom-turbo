@@ -616,7 +616,6 @@ class VizdoomTurboVecEnv(VectorEnv):
             and not self.maxpool_last_two
             and self.obs_grayscale
             and self.obs_resize_algorithm == "area"
-            and self.obs_crop == (0, 0, 0, 0)
             and obs_resize == (84, 84)
         )
 
@@ -894,6 +893,7 @@ class VizdoomTurboVecEnv(VectorEnv):
                 native_api[6]
                 if len(native_api) >= 7
                 and os.environ.get("VIZDOOM_TURBO_DISABLE_BACKGROUND_PROVENANCE") != "1"
+                and (self.obs_crop_mode == "mask" or self.obs_crop == (0, 0, 0, 0))
                 else None
             )
             self._native_reset_start_api = (

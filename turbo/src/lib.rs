@@ -33,9 +33,7 @@ impl ResizeAlgorithm {
 }
 
 const MASKED_SAMPLE: usize = u32::MAX as usize;
-const INDEXED_AREA_DIVISOR: u64 = 1_600;
-const INDEXED_AREA_WEIGHT_QUANTUM: u32 = 48;
-const INDEXED_AREA_CHANNEL_BITS: u32 = 20;
+const INDEXED_AREA_CHANNEL_BITS: u32 = 21;
 const INDEXED_AREA_CHANNEL_MASK: u64 = (1 << INDEXED_AREA_CHANNEL_BITS) - 1;
 const INDEXED_HISTORY_CAPACITY: usize = 4;
 const INDEXED_TILE_SIZE: usize = 12;
@@ -52,6 +50,13 @@ fn indexed_background_prefill_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("VIZDOOM_TURBO_DISABLE_BACKGROUND_PREFILL").is_none())
 }
 
+fn greatest_common_divisor(mut left: u32, mut right: u32) -> u32 {
+    while right != 0 {
+        (left, right) = (right, left % right);
+    }
+    left
+}
+
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 struct AreaSample {
     offset: u32,
@@ -65,8 +70,9 @@ struct AreaPixel {
 
 struct IndexedAreaPixel {
     base_offset: u32,
-    sample_start: u16,
-    sample_end: u16,
+    sample_start: u32,
+    sample_end: u32,
+    masked_weight: u32,
 }
 
 struct IndexedTile {
@@ -98,6 +104,7 @@ struct ImagePlan {
     linear_y: Vec<(usize, usize, f64)>,
     linear_x: Vec<(usize, usize, f64)>,
     area_divisor: u64,
+    indexed_packed: bool,
     area_samples: Vec<AreaSample>,
     area_pixels: Vec<AreaPixel>,
     indexed_area_samples: Vec<AreaSample>,
@@ -167,14 +174,13 @@ impl ImagePlan {
                 }
             }
         }
-        let indexed_exact = raw_h == 240
-            && raw_w == 320
-            && out_h == 84
-            && out_w == 84
-            && !mask_crop
-            && crop == [0, 0, 0, 0];
+        let indexed_exact = raw_h == 240 && raw_w == 320 && out_h == 84 && out_w == 84;
         let area_weight_quantum = if indexed_exact {
-            INDEXED_AREA_WEIGHT_QUANTUM
+            area_samples
+                .iter()
+                .fold((source_h * source_w) as u32, |divisor, sample| {
+                    greatest_common_divisor(divisor, sample.weight)
+                })
         } else {
             1
         };
@@ -186,12 +192,16 @@ impl ImagePlan {
         let (indexed_area_samples, indexed_area_pixels) = if indexed_exact {
             let mut indexed_samples = Vec::new();
             let mut indexed_pixels = Vec::with_capacity(area_pixels.len());
-            let mut patterns = HashMap::<Vec<AreaSample>, (u16, u16)>::new();
+            let mut patterns = HashMap::<Vec<AreaSample>, (u32, u32)>::new();
             for pixel in &area_pixels {
                 let samples = &area_samples[pixel.sample_start as usize..pixel.sample_end as usize];
-                let base_offset = samples[0].offset;
+                let base_offset = samples
+                    .iter()
+                    .find(|sample| sample.offset != MASKED_SAMPLE as u32)
+                    .map_or(0, |sample| sample.offset);
                 let pattern = samples
                     .iter()
+                    .filter(|sample| sample.offset != MASKED_SAMPLE as u32)
                     .map(|sample| AreaSample {
                         offset: sample.offset - base_offset,
                         weight: sample.weight,
@@ -199,14 +209,19 @@ impl ImagePlan {
                     .collect::<Vec<_>>();
                 let (sample_start, sample_end) =
                     *patterns.entry(pattern.clone()).or_insert_with(|| {
-                        let sample_start = indexed_samples.len() as u16;
+                        let sample_start = indexed_samples.len() as u32;
                         indexed_samples.extend(pattern);
-                        (sample_start, indexed_samples.len() as u16)
+                        (sample_start, indexed_samples.len() as u32)
                     });
                 indexed_pixels.push(IndexedAreaPixel {
                     base_offset,
                     sample_start,
                     sample_end,
+                    masked_weight: samples
+                        .iter()
+                        .filter(|sample| sample.offset == MASKED_SAMPLE as u32)
+                        .map(|sample| sample.weight)
+                        .sum(),
                 });
             }
             (indexed_samples, indexed_pixels)
@@ -214,6 +229,8 @@ impl ImagePlan {
             (Vec::new(), Vec::new())
         };
         let indexed_tiles = if indexed_exact {
+            let source_y_offset = if mask_crop { 0 } else { crop[0] };
+            let source_x_offset = if mask_crop { 0 } else { crop[2] };
             (0..INDEXED_TILE_COUNT)
                 .map(|tile| {
                     let tile_y = tile / INDEXED_TILE_COLUMNS;
@@ -222,10 +239,10 @@ impl ImagePlan {
                     let output_y_end = ((tile_y + 1) * INDEXED_TILE_SIZE).min(out_h);
                     let output_x_start = tile_x * INDEXED_TILE_SIZE;
                     let output_x_end = ((tile_x + 1) * INDEXED_TILE_SIZE).min(out_w);
-                    let source_y_start = output_y_start * source_h / out_h;
-                    let source_y_end = (output_y_end * source_h).div_ceil(out_h);
-                    let source_x_start = output_x_start * source_w / out_w;
-                    let source_x_end = (output_x_end * source_w).div_ceil(out_w);
+                    let source_y_start = output_y_start * source_h / out_h + source_y_offset;
+                    let source_y_end = (output_y_end * source_h).div_ceil(out_h) + source_y_offset;
+                    let source_x_start = output_x_start * source_w / out_w + source_x_offset;
+                    let source_x_end = (output_x_end * source_w).div_ceil(out_w) + source_x_offset;
                     let width = source_x_end - source_x_start;
                     let area = (source_y_end - source_y_start) * width;
                     let mut fingerprint_offsets = [0; INDEXED_TILE_SAMPLES];
@@ -268,6 +285,9 @@ impl ImagePlan {
             linear_y: Self::linear_axis(source_h, out_h),
             linear_x: Self::linear_axis(source_w, out_w),
             area_divisor: source_h as u64 * source_w as u64 / u64::from(area_weight_quantum),
+            indexed_packed: source_h as u64 * source_w as u64 / u64::from(area_weight_quantum)
+                * 255
+                <= INDEXED_AREA_CHANNEL_MASK,
             area_samples,
             area_pixels,
             indexed_area_samples,
@@ -310,6 +330,15 @@ impl ImagePlan {
                     .collect()
             })
             .collect()
+    }
+
+    fn supports_indexed_area(&self) -> bool {
+        matches!(self.algorithm, ResizeAlgorithm::Area)
+            && self.out_c == 1
+            && self.raw_w == 320
+            && self.raw_h == 240
+            && self.out_w == 84
+            && self.out_h == 84
     }
 
     #[inline]
@@ -503,13 +532,43 @@ impl ImagePlan {
         out_y: usize,
         out_x: usize,
     ) -> [u8; 3] {
-        self.area_indexed_rgb_from_packed(
-            current,
-            palette,
-            out_y,
-            out_x,
-            self.area_indexed_packed_rgb(current, palette_rgb, out_y, out_x),
-        )
+        if self.indexed_packed {
+            self.area_indexed_rgb_from_packed(
+                current,
+                palette,
+                out_y,
+                out_x,
+                self.area_indexed_packed_rgb(current, palette_rgb, out_y, out_x),
+            )
+        } else {
+            self.area_indexed_rgb_unpacked(current, palette, out_y, out_x)
+        }
+    }
+
+    #[inline]
+    fn area_indexed_rgb_unpacked(
+        &self,
+        current: &[u8],
+        palette: &[u8],
+        out_y: usize,
+        out_x: usize,
+    ) -> [u8; 3] {
+        let pixel = &self.indexed_area_pixels[out_y * self.out_w + out_x];
+        let indexed_current = &current[pixel.base_offset as usize..];
+        let samples =
+            &self.indexed_area_samples[pixel.sample_start as usize..pixel.sample_end as usize];
+        let fill_weight = u64::from(pixel.masked_weight);
+        let mut sums = [u64::from(self.crop_fill) * fill_weight; 3];
+        for sample in samples {
+            let palette_index =
+                usize::from(unsafe { *indexed_current.get_unchecked(sample.offset as usize) });
+            let palette_offset = palette_index * 3;
+            let weight = u64::from(sample.weight);
+            sums[0] += u64::from(unsafe { *palette.get_unchecked(palette_offset) }) * weight;
+            sums[1] += u64::from(unsafe { *palette.get_unchecked(palette_offset + 1) }) * weight;
+            sums[2] += u64::from(unsafe { *palette.get_unchecked(palette_offset + 2) }) * weight;
+        }
+        self.round_indexed_rgb(current, palette, out_y, out_x, sums)
     }
 
     #[inline(always)]
@@ -541,7 +600,10 @@ impl ImagePlan {
             let weight = u64::from(sample.weight);
             packed_rgb[lane] += unsafe { *palette_rgb.get_unchecked(palette_index) } * weight;
         }
-        packed_rgb.into_iter().sum::<u64>()
+        let packed_fill = u64::from(self.crop_fill)
+            | (u64::from(self.crop_fill) << INDEXED_AREA_CHANNEL_BITS)
+            | (u64::from(self.crop_fill) << (INDEXED_AREA_CHANNEL_BITS * 2));
+        packed_rgb.into_iter().sum::<u64>() + packed_fill * u64::from(pixel.masked_weight)
     }
 
     #[inline(always)]
@@ -558,20 +620,32 @@ impl ImagePlan {
             (packed_rgb >> INDEXED_AREA_CHANNEL_BITS) & INDEXED_AREA_CHANNEL_MASK,
             packed_rgb >> (INDEXED_AREA_CHANNEL_BITS * 2),
         ];
+        self.round_indexed_rgb(current, palette, out_y, out_x, sums)
+    }
+
+    #[inline(always)]
+    fn round_indexed_rgb(
+        &self,
+        current: &[u8],
+        palette: &[u8],
+        out_y: usize,
+        out_x: usize,
+        sums: [u64; 3],
+    ) -> [u8; 3] {
         let adjusted = [
-            sums[0] + INDEXED_AREA_DIVISOR / 2,
-            sums[1] + INDEXED_AREA_DIVISOR / 2,
-            sums[2] + INDEXED_AREA_DIVISOR / 2,
+            sums[0] + self.area_divisor / 2,
+            sums[1] + self.area_divisor / 2,
+            sums[2] + self.area_divisor / 2,
         ];
         let rounded = [
-            adjusted[0] / INDEXED_AREA_DIVISOR,
-            adjusted[1] / INDEXED_AREA_DIVISOR,
-            adjusted[2] / INDEXED_AREA_DIVISOR,
+            adjusted[0] / self.area_divisor,
+            adjusted[1] / self.area_divisor,
+            adjusted[2] / self.area_divisor,
         ];
         if adjusted
             .iter()
             .zip(rounded)
-            .any(|(sum, value)| value * INDEXED_AREA_DIVISOR == *sum)
+            .any(|(sum, value)| value * self.area_divisor == *sum)
         {
             self.area_indexed_rgb_float(current, palette, out_y, out_x)
         } else {
@@ -600,12 +674,26 @@ impl ImagePlan {
                 let x_weight =
                     (x_end.min(source_x as f64 + 1.0) - x_start.max(source_x as f64)).max(0.0);
                 let weight = y_weight * x_weight;
-                let raw_y = source_y + self.crop[0];
-                let raw_x = source_x + self.crop[2];
-                let palette_offset = usize::from(current[raw_y * self.raw_w + raw_x]) * 3;
-                sums[0] += palette[palette_offset] as f64 * weight;
-                sums[1] += palette[palette_offset + 1] as f64 * weight;
-                sums[2] += palette[palette_offset + 2] as f64 * weight;
+                let (raw_y, raw_x) = if self.mask_crop {
+                    (source_y, source_x)
+                } else {
+                    (source_y + self.crop[0], source_x + self.crop[2])
+                };
+                let masked = self.mask_crop
+                    && (raw_y < self.crop[0]
+                        || raw_y >= self.raw_h - self.crop[1]
+                        || raw_x < self.crop[2]
+                        || raw_x >= self.raw_w - self.crop[3]);
+                if masked {
+                    for sum in &mut sums {
+                        *sum += self.crop_fill as f64 * weight;
+                    }
+                } else {
+                    let palette_offset = usize::from(current[raw_y * self.raw_w + raw_x]) * 3;
+                    sums[0] += palette[palette_offset] as f64 * weight;
+                    sums[1] += palette[palette_offset + 1] as f64 * weight;
+                    sums[2] += palette[palette_offset + 2] as f64 * weight;
+                }
                 weight_sum += weight;
             }
         }
@@ -925,10 +1013,13 @@ impl ImagePlan {
         for out_y in descriptor.output_y_start..descriptor.output_y_end {
             for out_x in descriptor.output_x_start..descriptor.output_x_end {
                 let output_offset = out_y * self.out_w + out_x;
-                let packed_rgb = self.area_indexed_packed_rgb(current, palette_rgb, out_y, out_x);
-                output[output_offset] = Self::grayscale(
-                    self.area_indexed_rgb_from_packed(current, palette, out_y, out_x, packed_rgb),
-                );
+                output[output_offset] = Self::grayscale(self.area_indexed_rgb(
+                    current,
+                    palette,
+                    palette_rgb,
+                    out_y,
+                    out_x,
+                ));
             }
         }
     }
@@ -1037,11 +1128,13 @@ impl ImagePlan {
             for output_offset in 0..cache.output.len() {
                 let out_y = output_offset / self.out_w;
                 let out_x = output_offset % self.out_w;
-                let packed_rgb =
-                    self.area_indexed_packed_rgb(current, &cache.palette_rgb, out_y, out_x);
-                cache.output[output_offset] = Self::grayscale(
-                    self.area_indexed_rgb_from_packed(current, palette, out_y, out_x, packed_rgb),
-                );
+                cache.output[output_offset] = Self::grayscale(self.area_indexed_rgb(
+                    current,
+                    palette,
+                    &cache.palette_rgb,
+                    out_y,
+                    out_x,
+                ));
             }
             for tile in 0..INDEXED_TILE_COUNT {
                 cache.tile_fingerprints[tile] = self.indexed_tile_fingerprint(current, tile);
@@ -1904,17 +1997,9 @@ impl ImageProcessor {
         mut head: PyReadwriteArray1<'_, i64>,
         mut output: PyReadwriteArray3<'_, u8>,
     ) -> PyResult<()> {
-        if self.plan.mask_crop
-            || !matches!(self.plan.algorithm, ResizeAlgorithm::Area)
-            || self.plan.out_c != 1
-            || self.plan.raw_w != 320
-            || self.plan.raw_h != 240
-            || self.plan.out_w != 84
-            || self.plan.out_h != 84
-            || self.plan.crop != [0, 0, 0, 0]
-        {
+        if !self.plan.supports_indexed_area() {
             return Err(PyValueError::new_err(
-                "indexed preprocessing requires the exact 320x240 to 84x84 unmasked area-resize grayscale profile",
+                "indexed preprocessing requires 320x240 to 84x84 area-resize grayscale with crop removal or masking",
             ));
         }
         if current.shape() != [self.plan.raw_h, self.plan.raw_w] {
@@ -2001,17 +2086,9 @@ impl ImageProcessor {
         reset_start_address: Option<usize>,
         reset_seeds: Option<PyReadonlyArray1<'_, u32>>,
     ) -> PyResult<bool> {
-        if self.plan.mask_crop
-            || !matches!(self.plan.algorithm, ResizeAlgorithm::Area)
-            || self.plan.out_c != 1
-            || self.plan.raw_w != 320
-            || self.plan.raw_h != 240
-            || self.plan.out_w != 84
-            || self.plan.out_h != 84
-            || self.plan.crop != [0, 0, 0, 0]
-        {
+        if !self.plan.supports_indexed_area() {
             return Err(PyValueError::new_err(
-                "native batch preprocessing requires the exact 320x240 to 84x84 unmasked area-resize grayscale profile",
+                "native batch preprocessing requires 320x240 to 84x84 area-resize grayscale with crop removal or masking",
             ));
         }
         let expected_stack = [
@@ -2272,6 +2349,11 @@ impl ImageProcessor {
         reset_address: Option<usize>,
         seeds: Option<PyReadonlyArray1<'_, u32>>,
     ) -> PyResult<()> {
+        if !self.plan.supports_indexed_area() {
+            return Err(PyValueError::new_err(
+                "native batch preprocessing requires 320x240 to 84x84 area-resize grayscale with crop removal or masking",
+            ));
+        }
         let expected_stack = [
             self.num_envs,
             self.frame_stack,
@@ -2399,17 +2481,9 @@ impl ImageProcessor {
         mut head: PyReadwriteArray1<'_, i64>,
         mut output: PyReadwriteArray3<'_, u8>,
     ) -> PyResult<()> {
-        if self.plan.mask_crop
-            || !matches!(self.plan.algorithm, ResizeAlgorithm::Area)
-            || self.plan.out_c != 1
-            || self.plan.raw_w != 320
-            || self.plan.raw_h != 240
-            || self.plan.out_w != 84
-            || self.plan.out_h != 84
-            || self.plan.crop != [0, 0, 0, 0]
-        {
+        if !self.plan.supports_indexed_area() {
             return Err(PyValueError::new_err(
-                "indexed preprocessing requires the exact 320x240 to 84x84 unmasked area-resize grayscale profile",
+                "indexed preprocessing requires 320x240 to 84x84 area-resize grayscale with crop removal or masking",
             ));
         }
         if current.shape() != [self.plan.raw_h, self.plan.raw_w] {
