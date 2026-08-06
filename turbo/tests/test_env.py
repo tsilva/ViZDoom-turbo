@@ -10,6 +10,7 @@ import pytest
 import vizdoom as vzd
 from gymnasium.vector import AutoresetMode
 from vizdoom_turbo import VizDoomTurboVecEnv, VizdoomTurboVecEnv, scenario_buttons
+from vizdoom_turbo.env import _SignalFrameStacks
 
 SUPPORTED_SCENARIOS = (
     "basic",
@@ -94,6 +95,25 @@ def make_exact_env(**overrides) -> VizdoomTurboVecEnv:
     return VizdoomTurboVecEnv(**options)
 
 
+def make_history_env(**overrides) -> VizdoomTurboVecEnv:
+    options = {
+        "game": "VizdoomBasic-v1",
+        "num_envs": 2,
+        "num_threads": 2,
+        "use_restricted_actions": "minimal",
+        "obs_resize": (84, 84),
+        "obs_grayscale": True,
+        "obs_layout": "chw",
+        "frame_skip": 1,
+        "frame_stack": 4,
+        "maxpool_last_two": False,
+        "info_filter": {"mode": "all", "keys": ["episode_time"]},
+        "info_frame_stack_keys": ["episode_time"],
+    }
+    options.update(overrides)
+    return VizdoomTurboVecEnv(**options)
+
+
 def assert_info_equal(actual: dict[str, np.ndarray], expected: dict[str, np.ndarray]) -> None:
     assert actual.keys() == expected.keys()
     for key in actual:
@@ -143,6 +163,7 @@ def test_public_signature_matches_turbo_constructor_contract() -> None:
         "sticky_action_prob",
         "reward_clip",
         "info_filter",
+        "info_frame_stack_keys",
         "state_catalog",
         "enemy_variants",
         "surface_variants",
@@ -180,6 +201,82 @@ def test_removed_state_dir_is_rejected() -> None:
     assert "state_dir" not in inspect.signature(VizdoomTurboVecEnv).parameters
     with pytest.raises(TypeError, match="state_dir"):
         VizdoomTurboVecEnv(state_dir="/tmp/states")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"info_frame_stack_keys": "episode_time"}, "sequence"),
+        ({"info_frame_stack_keys": ["missing"]}, "unknown"),
+        (
+            {"info_frame_stack_keys": ["episode_time", "episode_time"]},
+            "duplicate",
+        ),
+        (
+            {
+                "info_filter": {"mode": "all", "keys": ["ammo2"]},
+                "info_frame_stack_keys": ["episode_time"],
+            },
+            "included by info_filter",
+        ),
+        (
+            {
+                "info_filter": {"mode": "terminal", "keys": ["episode_time"]},
+                "info_frame_stack_keys": ["episode_time"],
+            },
+            "available on reset and every step",
+        ),
+        (
+            {"info_filter": "none", "info_frame_stack_keys": ["episode_time"]},
+            "included by info_filter",
+        ),
+    ],
+)
+def test_info_frame_stack_constructor_validation(
+    overrides: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises((TypeError, ValueError), match=message):
+        make_history_env(**overrides)
+
+
+def test_typed_signal_frame_stack_preserves_scalar_and_vector_schema() -> None:
+    stacks = _SignalFrameStacks(
+        2,
+        3,
+        {
+            "scalar": {"dtype": np.dtype(np.int16), "shape": ()},
+            "vector": {"dtype": np.dtype(np.float32), "shape": (2,)},
+        },
+    )
+    mask = np.ones(2, dtype=np.bool_)
+    scalar = np.asarray([1, 2], dtype=np.int16)
+    vector = np.asarray([[1.5, 2.5], [3.5, 4.5]], dtype=np.float32)
+    stacks.reset((scalar, vector), mask)
+    infos: dict[str, np.ndarray] = {}
+    stacks.add_infos(infos, mask)
+    assert infos["scalar_frame_stack"].shape == (2, 3)
+    assert infos["scalar_frame_stack"].dtype == np.int16
+    assert infos["vector_frame_stack"].shape == (2, 3, 2)
+    assert infos["vector_frame_stack"].dtype == np.float32
+    np.testing.assert_array_equal(infos["scalar_frame_stack"], [[1, 1, 1], [2, 2, 2]])
+    np.testing.assert_array_equal(
+        infos["vector_frame_stack"],
+        np.repeat(vector[:, None], 3, axis=1),
+    )
+
+    next_scalar = np.asarray([5, 6], dtype=np.int16)
+    next_vector = np.asarray([[5.5, 6.5], [7.5, 8.5]], dtype=np.float32)
+    stacks.append((next_scalar, next_vector))
+    infos = {}
+    stacks.add_infos(infos, mask)
+    np.testing.assert_array_equal(infos["scalar_frame_stack"], [[1, 1, 5], [2, 2, 6]])
+    np.testing.assert_array_equal(infos["vector_frame_stack"][:, -1], next_vector)
+
+    with pytest.raises(RuntimeError, match="incomplete"):
+        stacks.append((next_scalar,))
+    with pytest.raises(RuntimeError, match="dtype"):
+        stacks.append((next_scalar.astype(np.int32), next_vector))
 
 
 def test_basic_plus_samples_coherent_texture_sets_and_targets() -> None:
@@ -795,6 +892,218 @@ def test_turbo_api_v1_capabilities_signals_ownership_and_rendering() -> None:
         env.close()
 
 
+def test_info_frame_stack_reset_repeats_current_value_and_declares_schema() -> None:
+    env = make_history_env(frame_stack=4)
+    try:
+        _observations, infos = env.reset(seed=19)
+        expected = np.repeat(infos["episode_time"][:, None], 4, axis=1)
+        np.testing.assert_array_equal(infos["episode_time_frame_stack"], expected)
+        np.testing.assert_array_equal(infos["_episode_time_frame_stack"], [True, True])
+        assert infos["episode_time_frame_stack"].shape == (2, 4)
+        schema = env.signal_schema["episode_time_frame_stack"]
+        assert schema == {
+            "dtype": np.dtype(np.float64),
+            "shape": (4,),
+            "available_on_reset": True,
+            "available_on_step": True,
+        }
+        assert env.capabilities["supports_info_frame_stack"] is True
+    finally:
+        env.close()
+
+
+def test_info_frame_stack_orders_policy_transitions_oldest_to_newest() -> None:
+    env = make_history_env(frame_stack=4, frame_skip=1)
+    try:
+        _observations, infos = env.reset(seed=23)
+        expected = [infos["episode_time"].copy()] * 4
+        for _ in range(6):
+            _observations, _rewards, _terminated, _truncated, infos = env.step(
+                np.zeros(2, dtype=np.int64)
+            )
+            expected = [*expected[1:], infos["episode_time"].copy()]
+            np.testing.assert_array_equal(
+                infos["episode_time_frame_stack"],
+                np.stack(expected, axis=1),
+            )
+    finally:
+        env.close()
+
+
+def test_info_frame_stack_appends_once_for_frame_skip() -> None:
+    env = make_history_env(frame_stack=4, frame_skip=5)
+    try:
+        _observations, reset_infos = env.reset(seed=29)
+        reset_time = reset_infos["episode_time"].copy()
+        _observations, _rewards, _terminated, _truncated, infos = env.step(
+            np.zeros(2, dtype=np.int64)
+        )
+        np.testing.assert_array_equal(
+            infos["episode_time_frame_stack"][:, :-1],
+            np.repeat(reset_time[:, None], 3, axis=1),
+        )
+        np.testing.assert_array_equal(
+            infos["episode_time_frame_stack"][:, -1],
+            infos["episode_time"],
+        )
+        np.testing.assert_array_equal(infos["episode_time"] - reset_time, 5.0)
+    finally:
+        env.close()
+
+
+def test_info_frame_stack_vector_lanes_evolve_independently() -> None:
+    env = make_history_env(frame_stack=4, frame_skip=1)
+    try:
+        env.reset(seed=31)
+        for _ in range(3):
+            env.step(np.zeros(2, dtype=np.int64))
+        mask = np.asarray([True, False], dtype=np.bool_)
+        state_indices = np.zeros(2, dtype=np.int32)
+        env.reset(
+            seed=[37, None],
+            options={"reset_mask": mask, "state_indices": state_indices},
+        )
+        _observations, _rewards, _terminated, _truncated, infos = env.step(
+            np.zeros(2, dtype=np.int64)
+        )
+        assert not np.array_equal(
+            infos["episode_time_frame_stack"][0],
+            infos["episode_time_frame_stack"][1],
+        )
+        np.testing.assert_array_equal(
+            infos["episode_time_frame_stack"][:, -1],
+            infos["episode_time"],
+        )
+    finally:
+        env.close()
+
+
+def test_masked_reset_changes_only_selected_info_frame_stack_lanes() -> None:
+    env = make_history_env(frame_stack=4, frame_skip=1)
+    try:
+        env.reset(seed=41)
+        for _ in range(3):
+            _observations, _rewards, _terminated, _truncated, infos = env.step(
+                np.zeros(2, dtype=np.int64)
+            )
+        lane_one_before = infos["episode_time_frame_stack"][1].copy()
+        mask = np.asarray([True, False], dtype=np.bool_)
+        _observations, reset_infos = env.reset(
+            seed=[43, None],
+            options={
+                "reset_mask": mask,
+                "state_indices": np.zeros(2, dtype=np.int32),
+            },
+        )
+        np.testing.assert_array_equal(
+            reset_infos["episode_time_frame_stack"][1],
+            lane_one_before,
+        )
+        np.testing.assert_array_equal(
+            reset_infos["episode_time_frame_stack"][0],
+            np.repeat(reset_infos["episode_time"][0], 4),
+        )
+        np.testing.assert_array_equal(reset_infos["_episode_time_frame_stack"], mask)
+    finally:
+        env.close()
+
+
+def test_terminal_info_frame_stack_does_not_leak_into_next_episode() -> None:
+    env = make_history_env(
+        num_envs=1,
+        num_threads=1,
+        frame_stack=4,
+        frame_skip=4,
+        vizdoom_config={"episode_timeout": 20, "episode_start_time": 1},
+    )
+    try:
+        env.reset(seed=47)
+        for _ in range(8):
+            _observations, _rewards, terminated, truncated, infos = env.step(
+                np.zeros(1, dtype=np.int64)
+            )
+            if bool((terminated | truncated)[0]):
+                break
+        assert bool((terminated | truncated)[0])
+        terminal_history = infos["episode_time_frame_stack"].copy()
+        terminal_value = infos["episode_time"].copy()
+        np.testing.assert_array_equal(terminal_history[:, -1], terminal_value)
+
+        mask = np.ones(1, dtype=np.bool_)
+        _observations, reset_infos = env.reset(
+            seed=53,
+            options={
+                "reset_mask": mask,
+                "state_indices": np.zeros(1, dtype=np.int32),
+            },
+        )
+        np.testing.assert_array_equal(
+            reset_infos["episode_time_frame_stack"],
+            np.repeat(reset_infos["episode_time"][:, None], 4, axis=1),
+        )
+        assert reset_infos["episode_time"][0] != terminal_value[0]
+        np.testing.assert_array_equal(infos["episode_time_frame_stack"], terminal_history)
+    finally:
+        env.close()
+
+
+def test_info_frame_stack_snapshot_continuation_round_trip() -> None:
+    env = make_history_env(frame_stack=4, frame_skip=2)
+    try:
+        env.reset(seed=59)
+        for _ in range(3):
+            _observations, _rewards, _terminated, _truncated, infos = env.step(
+                np.zeros(2, dtype=np.int64)
+            )
+        captured_history = infos["episode_time_frame_stack"].copy()
+        mask = np.ones(2, dtype=np.bool_)
+        snapshots = env.capture_snapshots(mask)
+        expected = env.step(np.ones(2, dtype=np.int64))
+
+        _observations, reset_infos = env.reset(
+            options={
+                "reset_mask": mask,
+                "state_indices": np.full(2, -1, dtype=np.int32),
+                "snapshots": snapshots,
+            }
+        )
+        np.testing.assert_array_equal(
+            reset_infos["episode_time_frame_stack"],
+            captured_history,
+        )
+        actual = env.step(np.ones(2, dtype=np.int64))
+        for key in (
+            "episode_time",
+            "_episode_time",
+            "episode_time_frame_stack",
+            "_episode_time_frame_stack",
+        ):
+            np.testing.assert_array_equal(actual[4][key], expected[4][key])
+    finally:
+        env.close()
+
+
+def test_info_frame_stack_depth_one_tracks_current_signal() -> None:
+    env = make_history_env(frame_stack=1, frame_skip=3)
+    try:
+        _observations, infos = env.reset(seed=61)
+        assert infos["episode_time_frame_stack"].shape == (2, 1)
+        np.testing.assert_array_equal(
+            infos["episode_time_frame_stack"][:, 0],
+            infos["episode_time"],
+        )
+        for _ in range(3):
+            _observations, _rewards, _terminated, _truncated, infos = env.step(
+                np.zeros(2, dtype=np.int64)
+            )
+            np.testing.assert_array_equal(
+                infos["episode_time_frame_stack"][:, 0],
+                infos["episode_time"],
+            )
+    finally:
+        env.close()
+
+
 def test_legacy_reset_selector_names_are_rejected() -> None:
     env = make_env()
     try:
@@ -1191,3 +1500,76 @@ def test_native_pipeline_matches_fallback_through_terminals_and_masked_resets(
     finally:
         native.close()
         fallback.close()
+
+
+def test_info_frame_stack_native_and_fallback_pipelines_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    options = {
+        "frame_skip": 3,
+        "info_filter": {"mode": "all", "keys": ["ammo2", "episode_time"]},
+        "info_frame_stack_keys": ["ammo2", "episode_time"],
+    }
+    native = make_history_env(**options)
+    monkeypatch.setenv("VIZDOOM_TURBO_DISABLE_NATIVE_PIPELINE", "1")
+    fallback = make_history_env(**options)
+    try:
+        assert native._native_stepper is not None
+        assert fallback._native_stepper is None
+        native_observations, native_infos = native.reset(seed=67)
+        fallback_observations, fallback_infos = fallback.reset(seed=67)
+        np.testing.assert_array_equal(native_observations, fallback_observations)
+        assert_info_equal(native_infos, fallback_infos)
+        for step in range(8):
+            actions = np.asarray([step % 3, (step + 1) % 3], dtype=np.int64)
+            native_transition = native.step(actions)
+            fallback_transition = fallback.step(actions)
+            for native_value, fallback_value in zip(
+                native_transition[:4],
+                fallback_transition[:4],
+                strict=True,
+            ):
+                np.testing.assert_array_equal(native_value, fallback_value)
+            assert_info_equal(native_transition[4], fallback_transition[4])
+    finally:
+        native.close()
+        fallback.close()
+
+
+def test_disabled_info_frame_stack_has_no_storage_and_current_infos_are_unchanged() -> None:
+    disabled = make_history_env(info_frame_stack_keys=None)
+    enabled = make_history_env()
+    try:
+        assert disabled.info_frame_stack_keys == ()
+        assert disabled._info_frame_stacks is None
+        assert "episode_time_frame_stack" not in disabled.signal_schema
+        disabled_observations, disabled_infos = disabled.reset(seed=71)
+        enabled_observations, enabled_infos = enabled.reset(seed=71)
+        np.testing.assert_array_equal(disabled_observations, enabled_observations)
+        assert "episode_time_frame_stack" not in disabled_infos
+        for key in ("episode_time", "_episode_time"):
+            np.testing.assert_array_equal(disabled_infos[key], enabled_infos[key])
+            assert disabled_infos[key].tobytes() == enabled_infos[key].tobytes()
+
+        for _ in range(8):
+            actions = np.zeros(2, dtype=np.int64)
+            disabled_transition = disabled.step(actions)
+            enabled_transition = enabled.step(actions)
+            for disabled_value, enabled_value in zip(
+                disabled_transition[:4],
+                enabled_transition[:4],
+                strict=True,
+            ):
+                np.testing.assert_array_equal(disabled_value, enabled_value)
+            for key in ("episode_time", "_episode_time"):
+                np.testing.assert_array_equal(
+                    disabled_transition[4][key],
+                    enabled_transition[4][key],
+                )
+                assert (
+                    disabled_transition[4][key].tobytes()
+                    == enabled_transition[4][key].tobytes()
+                )
+    finally:
+        disabled.close()
+        enabled.close()

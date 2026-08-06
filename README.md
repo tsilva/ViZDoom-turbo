@@ -88,6 +88,35 @@ env = VizdoomTurboVecEnv(
 The canonical 84×84 grayscale profile performs crop removal and masking
 directly in the indexed native pipeline.
 
+### Frame-aligned info histories
+
+Pass `info_frame_stack_keys` to request policy-transition histories whose depth
+always matches the resolved `frame_stack`:
+
+```python
+env = VizdoomTurboVecEnv(
+    "VizdoomBasic-v1",
+    frame_skip=4,
+    frame_stack=4,
+    game_variables=["HEALTH", "ARMOR", "AMMO2", "SELECTED_WEAPON"],
+    info_filter={
+        "mode": "all",
+        "keys": ["health", "armor", "ammo2", "selected_weapon"],
+    },
+    info_frame_stack_keys=["health", "armor", "ammo2", "selected_weapon"],
+)
+```
+
+The current fields remain unchanged (`infos["health"]` and
+`infos["_health"]`). The opt-in history adds
+`infos["health_frame_stack"]` with shape `(num_envs, frame_stack)` and
+`infos["_health_frame_stack"]` with shape `(num_envs,)`; non-scalar signals
+retain their trailing shape after the history axis. Histories are ordered
+oldest-to-newest, repeat the reset value, shift once per vector-environment
+`step()` regardless of `frame_skip`, and follow masked-reset, terminal, and live
+snapshot semantics lane by lane. They are policy-transition histories, not raw
+ViZDoom-tic histories.
+
 ## Turbo Vector API v1
 
 `VizdoomTurboVecEnv` implements the strict Turbo Vector API v1:
@@ -96,6 +125,9 @@ directly in the indexed native pipeline.
   advertises `rgb_array`.
 - Immutable `capabilities` and `signal_schema` declarations describe supported
   features and the dtype, shape, and reset/step availability of every signal.
+  `capabilities["supports_info_frame_stack"]` advertises opt-in aligned info
+  histories, and each generated history has shape
+  `(frame_stack, *original_shape)` in `signal_schema`.
 - `buttons`, `action_mode`, `action_preset`, `action_table`,
   `action_meanings`, and `action_table_hash` expose the resolved action
   semantics without provider-specific probing.

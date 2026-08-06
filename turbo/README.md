@@ -89,6 +89,41 @@ The 320×240-to-84×84 grayscale area-resize profile applies crop removal and
 masking directly in the indexed native pipeline, without an intermediate RGB
 frame conversion.
 
+### Frame-aligned info histories
+
+Pass `info_frame_stack_keys` to request policy-transition histories whose depth
+always matches the resolved `frame_stack`:
+
+```python
+env = VizdoomTurboVecEnv(
+    "VizdoomBasic-v1",
+    frame_skip=4,
+    frame_stack=4,
+    game_variables=["HEALTH", "ARMOR", "AMMO2", "SELECTED_WEAPON"],
+    info_filter={
+        "mode": "all",
+        "keys": ["health", "armor", "ammo2", "selected_weapon"],
+    },
+    info_frame_stack_keys=["health", "armor", "ammo2", "selected_weapon"],
+)
+```
+
+For every selected key such as `health`, the existing current value and mask
+remain `infos["health"]` and `infos["_health"]`. The opt-in history adds
+`infos["health_frame_stack"]` with shape `(num_envs, frame_stack)` and
+`infos["_health_frame_stack"]` with shape `(num_envs,)`; a non-scalar signal's
+trailing dimensions follow the history axis unchanged. Histories are ordered
+oldest-to-newest. An ordinary reset repeats the reset value, a masked reset
+changes only selected lanes, and every vector-environment `step()` shifts and
+appends exactly once regardless of `frame_skip`. Terminal histories are
+returned before reset, and live snapshots preserve continuation histories
+exactly. These are policy-transition histories, not raw ViZDoom-tic histories.
+
+Selected keys must be present in an `info_filter` with `mode="all"`, available
+on reset and every step, and unique. Unknown, unavailable, colliding, or
+filtered-out selections fail during construction rather than falling back to
+current-only values.
+
 ### Augmented environments
 
 Augmented variants use the `<base>-Plus-v<version>` naming convention.
@@ -219,6 +254,9 @@ comparison grids live with the editable Defend the Line Plus scenario sources.
   advertises `rgb_array`.
 - Immutable `capabilities` and `signal_schema` declarations describe supported
   features and the dtype, shape, and reset/step availability of every signal.
+  `capabilities["supports_info_frame_stack"]` advertises opt-in aligned info
+  histories, and each generated history has shape
+  `(frame_stack, *original_shape)` in `signal_schema`.
 - `buttons`, `action_mode`, `action_preset`, `action_table`,
   `action_meanings`, and `action_table_hash` expose the resolved action
   semantics without provider-specific probing.

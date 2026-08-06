@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Nothing yet.
+- Add opt-in frame-stack-aligned histories for selected info signals while
+  preserving existing current-transition values and masks.
 
 ## 1.3.0.post22 - 2026-08-04
 

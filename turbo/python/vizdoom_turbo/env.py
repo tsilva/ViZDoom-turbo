@@ -366,13 +366,105 @@ class _LiveSnapshot:
     last_action: np.ndarray
     state_index: int
     episode_return: float
+    info_frame_stacks: tuple[np.ndarray, ...]
 
     @property
     def nbytes(self) -> int:
-        return self.action_history.nbytes + self.stack.nbytes + self.raw_frame.nbytes
+        return (
+            self.action_history.nbytes
+            + self.stack.nbytes
+            + self.raw_frame.nbytes
+            + sum(stack.nbytes for stack in self.info_frame_stacks)
+        )
 
     def __reduce__(self):
         raise TypeError("live ViZDoom snapshots are session-local and cannot be pickled")
+
+
+class _SignalFrameStacks:
+    """Typed policy-transition histories stored independently from image frames."""
+
+    def __init__(
+        self,
+        num_envs: int,
+        frame_stack: int,
+        schema: Mapping[str, Mapping[str, Any]],
+    ):
+        self.keys = tuple(schema)
+        self.frame_stack = frame_stack
+        self._shapes = tuple(tuple(schema[key]["shape"]) for key in self.keys)
+        self._dtypes = tuple(np.dtype(schema[key]["dtype"]) for key in self.keys)
+        self._buffers = tuple(
+            np.zeros((num_envs, frame_stack, *shape), dtype=dtype)
+            for shape, dtype in zip(self._shapes, self._dtypes, strict=True)
+        )
+        self._num_envs = num_envs
+
+    def _validate_values(
+        self,
+        values: Sequence[np.ndarray],
+    ) -> tuple[np.ndarray, ...]:
+        if len(values) != len(self.keys):
+            raise RuntimeError("selected info history values are incomplete")
+        validated = []
+        for key, value, shape, dtype in zip(
+            self.keys,
+            values,
+            self._shapes,
+            self._dtypes,
+            strict=True,
+        ):
+            array = np.asarray(value)
+            expected_shape = (self._num_envs, *shape)
+            if array.shape != expected_shape:
+                raise RuntimeError(
+                    f"info signal {key!r} has shape {array.shape}; expected {expected_shape}"
+                )
+            if array.dtype != dtype:
+                raise RuntimeError(f"info signal {key!r} has dtype {array.dtype}; expected {dtype}")
+            validated.append(array)
+        return tuple(validated)
+
+    def reset(self, values: Sequence[np.ndarray], mask: np.ndarray) -> None:
+        validated = self._validate_values(values)
+        for lane in np.flatnonzero(mask):
+            for buffer, value in zip(self._buffers, validated, strict=True):
+                buffer[int(lane)] = value[int(lane)]
+
+    def append(self, values: Sequence[np.ndarray]) -> None:
+        validated = self._validate_values(values)
+        for buffer, value in zip(self._buffers, validated, strict=True):
+            for slot in range(self.frame_stack - 1):
+                buffer[:, slot] = buffer[:, slot + 1]
+            buffer[:, -1] = value
+
+    def capture_lane(self, lane: int) -> tuple[np.ndarray, ...]:
+        return tuple(buffer[lane].copy() for buffer in self._buffers)
+
+    def restore_lane(self, lane: int, stacks: Sequence[np.ndarray]) -> None:
+        if len(stacks) != len(self.keys):
+            raise RuntimeError("snapshot info histories are incomplete")
+        for key, buffer, stack, shape, dtype in zip(
+            self.keys,
+            self._buffers,
+            stacks,
+            self._shapes,
+            self._dtypes,
+            strict=True,
+        ):
+            array = np.asarray(stack)
+            expected_shape = (self.frame_stack, *shape)
+            if array.shape != expected_shape or array.dtype != dtype:
+                raise RuntimeError(
+                    f"snapshot info history {key!r} does not match the environment schema"
+                )
+            buffer[lane] = array
+
+    def add_infos(self, result: dict[str, np.ndarray], present: np.ndarray) -> None:
+        for key, buffer in zip(self.keys, self._buffers, strict=True):
+            history_key = f"{key}_frame_stack"
+            result[history_key] = buffer.copy()
+            result[f"_{history_key}"] = present.copy()
 
 
 class VizdoomTurboVecEnv(VectorEnv):
@@ -385,6 +477,11 @@ class VizdoomTurboVecEnv(VectorEnv):
 
     Autoreset is permanently disabled. Terminal lanes retain their final policy
     observation and must be selected by a masked reset before any further step.
+
+    ``info_frame_stack_keys`` optionally adds oldest-to-newest, lane-local
+    policy-transition histories for selected reset-and-step info signals. Their
+    depth is always ``frame_stack``; existing current-transition fields remain
+    unchanged.
     """
 
     metadata = {
@@ -427,6 +524,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         sticky_action_prob: float = 0.0,
         reward_clip: bool | tuple[float, float] = False,
         info_filter: str | Mapping[str, Any] = "all",
+        info_frame_stack_keys: Sequence[str] | None = None,
         state_catalog: Sequence[Any] | None = None,
         doom_map: str | None = None,
         doom_skill: int | None = None,
@@ -770,7 +868,7 @@ class VizdoomTurboVecEnv(VectorEnv):
         self._signals = np.zeros((self.num_envs, len(self._signal_names)), dtype=np.float64)
         self._all_info_present = np.ones(self.num_envs, dtype=np.bool_)
         self._configure_info_filter(info_filter)
-        self.signal_schema = MappingProxyType(
+        signal_schema = (
             {
                 name: MappingProxyType(
                     {
@@ -785,6 +883,18 @@ class VizdoomTurboVecEnv(VectorEnv):
             if self._info_mode != "none"
             else {}
         )
+        self._configure_info_frame_stacks(info_frame_stack_keys, signal_schema)
+        for key in self.info_frame_stack_keys:
+            original = signal_schema[key]
+            signal_schema[f"{key}_frame_stack"] = MappingProxyType(
+                {
+                    "dtype": original["dtype"],
+                    "shape": (self.frame_stack, *original["shape"]),
+                    "available_on_reset": True,
+                    "available_on_step": True,
+                }
+            )
+        self.signal_schema = MappingProxyType(signal_schema)
         self.live_snapshots_deterministic = True
         self.capabilities = MappingProxyType(
             {
@@ -807,6 +917,7 @@ class VizdoomTurboVecEnv(VectorEnv):
                 "supports_noop_reset": True,
                 "supports_state_catalog": True,
                 "supports_live_snapshots": True,
+                "supports_info_frame_stack": True,
                 "supports_per_lane_rgb": True,
                 "supports_enemy_variants": self._plus_scenario is not None,
                 "supports_surface_variants": self._plus_scenario is not None,
@@ -820,6 +931,7 @@ class VizdoomTurboVecEnv(VectorEnv):
             "variables": self.game_variable_names,
             "frame_skip": self.frame_skip,
             "frame_stack": self.frame_stack,
+            "info_frame_stack_keys": self.info_frame_stack_keys,
             "crop": self.obs_crop,
             "crop_mode": self.obs_crop_mode,
             "resize": (self.obs_height, self.obs_width),
@@ -1042,6 +1154,70 @@ class VizdoomTurboVecEnv(VectorEnv):
             )
         )
 
+    def _configure_info_frame_stacks(
+        self,
+        value: Sequence[str] | None,
+        signal_schema: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        if value is None:
+            selected: tuple[str, ...] = ()
+        else:
+            if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
+                raise TypeError("info_frame_stack_keys must be a sequence of signal names or None")
+            if any(not isinstance(key, str) for key in value):
+                raise TypeError("info_frame_stack_keys must contain only strings")
+            selected = tuple(value)
+
+        duplicate_keys = sorted({key for key in selected if selected.count(key) > 1})
+        if duplicate_keys:
+            raise ValueError(f"info_frame_stack_keys generate duplicate fields: {duplicate_keys}")
+        unknown = set(selected) - set(self._signal_names)
+        if unknown:
+            raise ValueError(f"unknown info_frame_stack_keys: {sorted(unknown)}")
+
+        history_names = tuple(f"{key}_frame_stack" for key in selected)
+        generated_names = {*history_names, *(f"_{name}" for name in history_names)}
+        current_names = {
+            *self._signal_names,
+            *(f"_{name}" for name in self._signal_names),
+        }
+        collisions = generated_names & current_names
+        if collisions:
+            raise ValueError(
+                f"generated info frame-stack fields collide with signal names: {sorted(collisions)}"
+            )
+
+        incompatible = set(selected) - set(signal_schema)
+        if incompatible:
+            raise ValueError(
+                f"info_frame_stack_keys must be included by info_filter: {sorted(incompatible)}"
+            )
+        unavailable = [
+            key
+            for key in selected
+            if not signal_schema[key]["available_on_reset"]
+            or not signal_schema[key]["available_on_step"]
+        ]
+        if unavailable:
+            raise ValueError(
+                "info_frame_stack_keys must be available on reset and every step: "
+                f"{sorted(unavailable)}"
+            )
+
+        self.info_frame_stack_keys = selected
+        self._info_frame_stack_indices = tuple(
+            self._signal_names.index(key) for key in self.info_frame_stack_keys
+        )
+        history_schema = {key: signal_schema[key] for key in self.info_frame_stack_keys}
+        self._info_frame_stacks = (
+            _SignalFrameStacks(self.num_envs, self.frame_stack, history_schema)
+            if history_schema
+            else None
+        )
+
+    def _info_frame_stack_values(self) -> tuple[np.ndarray, ...]:
+        return tuple(self._signals[:, index] for index in self._info_frame_stack_indices)
+
     def _next_buffers(self):
         index = self._buffer_index
         self._buffer_index = (self._buffer_index + 1) % len(self._obs_buffers)
@@ -1072,7 +1248,12 @@ class VizdoomTurboVecEnv(VectorEnv):
         for index, variable in enumerate(self._game_variables):
             try:
                 values[index] = float(lane_game.get_game_variable(variable))
-            except Exception:
+            except Exception as exc:
+                name = self.game_variable_names[index]
+                if name in self.info_frame_stack_keys:
+                    raise RuntimeError(
+                        f"selected info history signal {name!r} is unavailable"
+                    ) from exc
                 values[index] = 0.0
         return values
 
@@ -1101,6 +1282,8 @@ class VizdoomTurboVecEnv(VectorEnv):
         for key, index in zip(self._info_keys, self._info_indices, strict=True):
             result[key] = self._signals[:, index].copy()
             result[f"_{key}"] = present.copy()
+        if self._info_frame_stacks is not None:
+            self._info_frame_stacks.add_infos(result, present)
         return result
 
     def _save_path(self, lane: int, purpose: str) -> Path:
@@ -1463,6 +1646,15 @@ class VizdoomTurboVecEnv(VectorEnv):
         if self._collect_derived_signals:
             for lane in reset_lane_values:
                 self._update_signal_row(int(lane))
+        if self._info_frame_stacks is not None:
+            self._info_frame_stacks.reset(self._info_frame_stack_values(), static_mask)
+            for lane in np.flatnonzero(snapshot_mask):
+                snapshot = snapshot_values[int(lane)]
+                if snapshot is not None:
+                    self._info_frame_stacks.restore_lane(
+                        int(lane),
+                        snapshot.info_frame_stacks,
+                    )
         if self._native_stepper is not None and self._native_reset_start_api is not None:
             for lane in reset_lane_values:
                 lane_index = int(lane)
@@ -1688,6 +1880,8 @@ class VizdoomTurboVecEnv(VectorEnv):
         if self._collect_derived_signals:
             for lane in range(self.num_envs):
                 self._update_signal_row(lane)
+        if self._info_frame_stacks is not None:
+            self._info_frame_stacks.append(self._info_frame_stack_values())
         return (
             self._returned_obs(observations),
             rewards,
@@ -1793,6 +1987,11 @@ class VizdoomTurboVecEnv(VectorEnv):
                 last_action=self._last_actions[lane].copy(),
                 state_index=int(self._active_state_indices[lane]),
                 episode_return=float(self._episode_returns[lane]),
+                info_frame_stacks=(
+                    self._info_frame_stacks.capture_lane(lane)
+                    if self._info_frame_stacks is not None
+                    else ()
+                ),
             )
         return tuple(result)
 
